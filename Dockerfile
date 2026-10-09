@@ -26,4 +26,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD curl -f http://localhost:${PORT:-8008}/health || exit 0
 
 # Start FastAPI server binding to Railway dynamic PORT
-CMD ["sh", "-c", "python -m uvicorn src.api.main:app --host 0.0.0.0 --port ${PORT:-8008}"]
+CMD ["python", "-m", "src.api.main"]

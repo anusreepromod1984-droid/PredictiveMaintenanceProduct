@@ -224,3 +224,9 @@ app.include_router(analytics_router, prefix=api_prefix)
 app.include_router(fault_assistant_router)
 
 logger.info(f"Initialized {settings.APP_NAME} v{settings.APP_VERSION} — API prefix: {api_prefix}")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", settings.PORT))
+    uvicorn.run("src.api.main:app", host="0.0.0.0", port=port)

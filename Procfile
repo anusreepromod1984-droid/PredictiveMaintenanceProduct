@@ -1,1 +1,1 @@
-web: python -m uvicorn src.api.main:app --host 0.0.0.0 --port ${PORT:-8008}
+web: python -m src.api.main
