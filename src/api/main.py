@@ -10,6 +10,7 @@ Production-grade upgrades:
   - Security headers (CSP, X-Frame-Options, HSTS)
 """
 
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
