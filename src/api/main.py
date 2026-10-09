@@ -31,6 +31,7 @@ from src.api.routes.diagnostics import router as diagnostics_router
 from src.api.routes.simulation import router as simulation_router
 from src.api.routes.analytics import router as analytics_router
 from src.api.routes.fault_assistant import router as fault_assistant_router
+from src.api.routes.settings import router as settings_router
 
 logger = get_logger("API.Main")
 
@@ -221,6 +222,7 @@ app.include_router(telemetry_router, prefix=api_prefix)
 app.include_router(diagnostics_router, prefix=api_prefix)
 app.include_router(simulation_router, prefix=api_prefix)
 app.include_router(analytics_router, prefix=api_prefix)
+app.include_router(settings_router, prefix=api_prefix)
 # Routes already include /api/v1 — same paths the UI server proxies to.
 app.include_router(fault_assistant_router)
 
