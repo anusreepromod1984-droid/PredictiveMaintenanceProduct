@@ -19,11 +19,13 @@ COPY run.sh .
 RUN mkdir -p /app/data
 
 # Default port (Railway injects $PORT at runtime)
+EXPOSE 8000
 EXPOSE 8008
+EXPOSE 8080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD curl -f http://localhost:${PORT:-8008}/health || exit 0
 
 # Start FastAPI server binding to Railway dynamic PORT
-CMD ["python", "-m", "src.api.main"]
+CMD ["python", "-m", "src.launcher"]

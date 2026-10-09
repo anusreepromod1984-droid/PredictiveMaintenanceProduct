@@ -1,1 +1,1 @@
-web: python -m src.api.main
+web: python -m src.launcher
