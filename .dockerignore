@@ -1,0 +1,29 @@
+# Version Control
+.git
+.gitignore
+
+# Virtual Environments & Packages
+venv/
+.venv/
+env/
+
+# Python Bytecode and Test Caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local databases and logs
+data/*.db
+data/*.sqlite*
+*.log
+
+# Documentation & Guidelines not required in container runtime
+AGENTS.md
+.cursorrules
+
+# OS & Editor
+.DS_Store
+.vscode/
+.idea/

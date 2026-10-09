@@ -1,0 +1,39 @@
+# Virtual Environments
+venv
+venv/
+.venv
+.venv/
+env
+env/
+.env/
+
+# Python Bytecode and Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Local Database & Storage
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.sqlite*
+*.log
+
+# Environment & Secrets
+.env
+.env.local
+.env.*.local
+
+# OS & Editor Artifacts
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*~

@@ -1,0 +1,33 @@
+# ============================================================
+# APMS Product - Production Dependencies (v3.0)
+# ============================================================
+
+# --- Core API Framework ---
+fastapi>=0.100.0
+uvicorn>=0.22.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# --- AI Agent Orchestration ---
+langgraph>=0.1.0
+
+# --- Industrial Signal Processing & ML ---
+numpy>=1.24.0
+scipy>=1.10.0            # FFT, Butterworth filter, Hilbert transform, Weibull MLE
+scikit-learn>=1.2.0      # Isolation Forest (Branch C anomaly detection)
+
+# --- Persistent Historian (SQLite default; swap DSN for TimescaleDB/PostgreSQL) ---
+# No extra dep for SQLite (stdlib). For PostgreSQL/TimescaleDB:
+# psycopg2-binary>=2.9.0
+# sqlalchemy>=2.0.0
+
+# --- Streaming Ingestion (optional - only needed if MQTT/Kafka configured) ---
+# paho-mqtt>=1.6.0        # Uncomment for MQTT Sparkplug B edge ingestion
+# aiokafka>=0.9.0         # Uncomment for Kafka streaming ingestion
+
+# --- Observability ---
+# prometheus-client>=0.17.0   # Uncomment for native Prometheus multiprocess mode
+
+# --- Testing ---
+pytest>=7.3.0
+httpx>=0.24.0

@@ -1,0 +1,3 @@
+You are an expert AI engineer working on the Multi-Tenant Industrial Predictive Maintenance System (APMS).
+Consult CONVERSATION_HANDOFF.md and README.md for architectural patterns, multi-tenant isolation rules, and dynamic LangGraph agent composition.
+Always maintain zero cross-talk guarantees and keep unit tests 100% passing.
