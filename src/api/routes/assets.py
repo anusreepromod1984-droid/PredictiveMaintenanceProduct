@@ -35,3 +35,29 @@ def delete_asset(tenant_id: str, asset_id: str):
     if not success:
         raise HTTPException(status_code=404, detail=f"Asset '{asset_id}' not found")
     return {"status": "DELETED", "asset_id": asset_id, "tenant_id": tenant_id}
+
+
+@router.get("/{asset_id}/thresholds")
+def get_asset_thresholds(tenant_id: str, asset_id: str):
+    """
+    Returns live effective thresholds for the asset twin.
+    Fetches dynamic thresholds from upstream Fleet PDM API if available,
+    falling back seamlessly to local twin baseline if unavailable or not configured.
+    """
+    a = asset_twin_registry.get_asset(tenant_id, asset_id)
+    if not a:
+        raise HTTPException(status_code=404, detail=f"Asset '{asset_id}' for tenant '{tenant_id}' not found")
+
+    from src.services.threshold_provider import threshold_provider
+    effective = threshold_provider.get_effective_thresholds(a)
+    cache_info = threshold_provider.get_cache_status(a.asset_id) or {}
+
+    return {
+        "tenant_id": tenant_id,
+        "asset_id": asset_id,
+        "effective_thresholds": effective,
+        "source": cache_info.get("source", "local_fallback"),
+        "cached_at": cache_info.get("ts"),
+        "local_baseline_thresholds": a.thresholds
+    }
+

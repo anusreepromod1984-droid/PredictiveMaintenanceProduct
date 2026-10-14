@@ -127,6 +127,13 @@ class DynamicAPMSOrchestrator:
     ) -> DiagnosticResult:
         start_time = time.time()
         
+        # 0. Sync dynamic thresholds from upstream API (falls back to local twin defaults if missing/offline)
+        try:
+            from src.services.threshold_provider import threshold_provider
+            twin = threshold_provider.sync_twin_thresholds(twin)
+        except Exception as e:
+            logger.debug(f"Dynamic threshold sync skipped: {e}")
+
         # 1. Build immutable TenantContext
         context = TenantContext(
             tenant_id=packet.tenant_id,

@@ -67,6 +67,14 @@ class Settings(BaseSettings):
     # -----------------------------------------------------------------------
     ENABLE_METRICS_ENDPOINT: bool = os.environ.get("ENABLE_METRICS", "true").lower() in ("1", "true", "yes")
 
+    # -----------------------------------------------------------------------
+    # Upstream Fleet / PDM AI Query API (Dynamic Thresholds & Metadata)
+    # -----------------------------------------------------------------------
+    AI_SERVICE_BASE_URL: str = os.environ.get("AI_SERVICE_BASE_URL", "http://168.144.37.186:4000")
+    AI_SERVICE_API_KEY: str = os.environ.get("AI_SERVICE_API_KEY", "")
+    AI_SERVICE_TIMEOUT_S: float = float(os.environ.get("AI_SERVICE_TIMEOUT_S", "5.0"))
+    THRESHOLD_CACHE_TTL_SEC: float = float(os.environ.get("THRESHOLD_CACHE_TTL_SEC", "300.0"))
+
     def get_cors_origins(self) -> List[str]:
         if self.CORS_ORIGINS == "*":
             return ["*"]
