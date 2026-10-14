@@ -158,7 +158,7 @@ def test_informational_channels_do_not_leak_into_limits():
     assert parsed["vibration_danger_mm_s"] == 5.0
     assert parsed["vibration_warning_mm_s"] == 3.0
     assert parsed["sound_danger_db"] == 85.0
-    assert parsed["sound_warning_db"] == 125.0
+    assert "sound_warning_db" not in parsed  # max 125 >= danger 85 -> dropped, local baseline kept
     assert "pressure_danger_bar" not in parsed
     assert "load_idle_threshold_pct" not in parsed  # would disable idle detection if set to 0
 
