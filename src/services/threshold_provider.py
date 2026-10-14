@@ -88,103 +88,89 @@ class UpstreamFleetClient:
         return None
 
 
+def _num(v: Any) -> Optional[float]:
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
 def parse_alert_profile_thresholds(alert_profile: Dict[str, Any]) -> Dict[str, float]:
     """
-    Parses upstream alertProfile structure into APMS standard threshold keys:
-      - vibration_warning_mm_s, vibration_danger_mm_s
-      - temp_warning_celsius, temp_danger_celsius
-      - compressor_temp_warning_celsius, compressor_temp_danger_celsius
-      - hydraulic_pressure_min_bar, pressure_danger_bar
-      - sound_warning_db, sound_danger_db
-      - rpm_min, rpm_max
+    Parses upstream alertProfile into APMS threshold keys using EXACT sensor/parameter
+    names (substring matching previously leaked unrelated channels into these keys).
+
+    Only parameters that are enabled AND carry a real alert_threshold are used, so
+    informational channels (frequencies, energy, yaw, runtime) never become limits.
+    Anything not found is simply omitted -> caller keeps the local baseline.
+
+    Keys produced:
+      vibration_warning_mm_s / vibration_danger_mm_s   <- IMU-Acceleration / Acceleration
+      temp_warning_celsius / temp_danger_celsius       <- Motor temperature
+      compressor_temp_warning_celsius / ..._danger_..  <- Compressor temperature
+      pressure_warning_bar / pressure_danger_bar       <- Pressure (max-pressure limit)
+      sound_warning_db / sound_danger_db               <- Microphone / Sound level
+      rpm_min / rpm_max                                <- IMU-Acceleration - RPM / Current RPM
     """
     extracted: Dict[str, float] = {}
     if not isinstance(alert_profile, dict):
         return extracted
 
-    # alertProfile can have 'sensors' or 'parameters' list
     sensors = alert_profile.get("sensors") or alert_profile.get("parameters") or []
     if isinstance(sensors, dict):
         sensors = [sensors]
 
+    def put(key: str, value: Optional[float]):
+        # First match wins so duplicate channels (e.g. "Pressure sensor x 2") can't overwrite.
+        if value is not None and key not in extracted:
+            extracted[key] = value
+
     for sensor in sensors:
         if not isinstance(sensor, dict):
             continue
-        sensor_name = (sensor.get("name") or "").lower()
+        sensor_name = (sensor.get("name") or "").strip().lower()
         params = sensor.get("parameters") or []
         if isinstance(params, dict):
             params = [params]
 
         for p in params:
-            if not isinstance(p, dict):
+            if not isinstance(p, dict) or p.get("enabled") is False:
                 continue
-            param_name = (p.get("name") or sensor_name).lower()
+            param_name = (p.get("name") or "").strip().lower()
             alert_th = p.get("alert_threshold")
-            val_max = p.get("max")
-            val_min = p.get("min")
+            high = _num(alert_th.get("high")) if isinstance(alert_th, dict) else _num(alert_th)
+            low = _num(alert_th.get("low")) if isinstance(alert_th, dict) else None
+            if high is None and low is None:
+                continue  # informational channel, no alert limit defined
+            val_max = _num(p.get("max"))
 
-            # Helper to get high/low from float or dict
-            high_th = alert_th.get("high") if isinstance(alert_th, dict) else (alert_th if isinstance(alert_th, (int, float)) else None)
-            low_th = alert_th.get("low") if isinstance(alert_th, dict) else None
+            if param_name == "current rpm":
+                put("rpm_max", high)
+                put("rpm_min", low)
+            elif sensor_name == "imu-acceleration" and param_name == "acceleration":
+                put("vibration_danger_mm_s", high)
+                put("vibration_warning_mm_s", val_max)
+            elif param_name == "motor temperature":
+                put("temp_danger_celsius", high)
+                put("temp_warning_celsius", val_max)
+            elif param_name == "compressor temperature":
+                put("compressor_temp_danger_celsius", high)
+                put("compressor_temp_warning_celsius", val_max)
+            elif param_name == "pressure":
+                put("pressure_danger_bar", high)
+                put("pressure_warning_bar", val_max)
+            elif param_name == "sound level":
+                put("sound_danger_db", high)
+                put("sound_warning_db", val_max)
 
-            # 1. RPM (check before generic acceleration to avoid matching "IMU-Acceleration - RPM")
-            if "rpm" in param_name or "rpm" in sensor_name:
-                if high_th is not None:
-                    extracted["rpm_max"] = float(high_th)
-                if low_th is not None:
-                    extracted["rpm_min"] = float(low_th)
-                elif isinstance(val_min, (int, float)):
-                    extracted["rpm_min"] = float(val_min)
-                if isinstance(val_max, (int, float)) and "rpm_max" not in extracted:
-                    extracted["rpm_max"] = float(val_max)
-
-            # 2. Vibration / IMU Acceleration / Amplitude
-            elif any(k in param_name or k in sensor_name for k in ("acceleration", "vibration", "amplitude")):
-                if high_th is not None:
-                    extracted["vibration_danger_mm_s"] = float(high_th)
-                if isinstance(val_max, (int, float)):
-                    extracted["vibration_warning_mm_s"] = float(val_max)
-
-            # 3. Motor Temperature
-            elif any(k in param_name for k in ("motor temperature", "temp_motor", "motor_temp")):
-                if high_th is not None:
-                    extracted["temp_danger_celsius"] = float(high_th)
-                if isinstance(val_max, (int, float)):
-                    extracted["temp_warning_celsius"] = float(val_max)
-
-            # 4. Compressor Temperature
-            elif any(k in param_name for k in ("compressor temperature", "temp_compressor")):
-                if high_th is not None:
-                    extracted["compressor_temp_danger_celsius"] = float(high_th)
-                if isinstance(val_max, (int, float)):
-                    extracted["compressor_temp_warning_celsius"] = float(val_max)
-
-            # Generic Temperature fallback
-            elif "temperature" in sensor_name or "ntc" in sensor_name:
-                if high_th is not None and "temp_danger_celsius" not in extracted:
-                    extracted["temp_danger_celsius"] = float(high_th)
-                if isinstance(val_max, (int, float)) and "temp_warning_celsius" not in extracted:
-                    extracted["temp_warning_celsius"] = float(val_max)
-
-            # 5. Pressure / Hydraulic
-            elif "pressure" in param_name or "pressure" in sensor_name:
-                if high_th is not None:
-                    extracted["pressure_danger_bar"] = float(high_th)
-                    extracted["hydraulic_pressure_min_bar"] = float(high_th)
-
-            # 6. Sound / Acoustics
-            elif "sound" in param_name or "microphone" in sensor_name:
-                if high_th is not None:
-                    extracted["sound_danger_db"] = float(high_th)
-                if isinstance(val_max, (int, float)):
-                    extracted["sound_warning_db"] = float(val_max)
-
-            # 7. Machine Load / Idle
-            elif "machine load" in param_name or "load" in param_name:
-                if isinstance(val_min, (int, float)):
-                    extracted["load_idle_threshold_pct"] = float(val_min)
-                elif high_th is not None:
-                    extracted["load_idle_threshold_pct"] = float(high_th)
+    # 'max' in the upstream profile is the healthy-band/sensor ceiling, not always a warning level.
+    # Drop any warning that is not strictly below its danger limit (keeps local baseline instead).
+    for warn_key, danger_key in (
+        ("vibration_warning_mm_s", "vibration_danger_mm_s"),
+        ("temp_warning_celsius", "temp_danger_celsius"),
+        ("compressor_temp_warning_celsius", "compressor_temp_danger_celsius"),
+        ("pressure_warning_bar", "pressure_danger_bar"),
+        ("sound_warning_db", "sound_danger_db"),
+    ):
+        if warn_key in extracted and danger_key in extracted and extracted[warn_key] >= extracted[danger_key]:
+            del extracted[warn_key]
 
     return extracted
 

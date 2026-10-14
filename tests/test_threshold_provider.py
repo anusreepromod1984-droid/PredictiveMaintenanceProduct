@@ -57,6 +57,7 @@ def test_parse_alert_profile_thresholds():
     assert parsed["rpm_max"] == 1650.0
     assert parsed["rpm_min"] == 1350.0
     assert parsed["pressure_danger_bar"] == 7.5
+    assert "hydraulic_pressure_min_bar" not in parsed
     assert parsed["sound_danger_db"] == 85.0
     assert parsed["sound_warning_db"] == 65.0
 
@@ -135,3 +136,36 @@ def test_partial_override_and_preservation():
     assert effective["vibration_danger_mm_s"] == 18.0
     assert effective["hydraulic_pressure_min_bar"] == 130.0
     assert effective["temp_warning_celsius"] == 70.0
+
+
+def test_informational_channels_do_not_leak_into_limits():
+    """Regression: frequencies, 'change in pressure', amplitudes and machine load must not become limits."""
+    profile = {"parameters": [
+        {"name": "IMU-Acceleration", "parameters": [
+            {"name": "Acceleration", "max": 3, "enabled": True, "alert_threshold": 5}]},
+        {"name": "Microphone - Frequency 1", "parameters": [
+            {"name": "Frequency 1", "max": 10000, "enabled": True, "alert_threshold": None}]},
+        {"name": "Microphone - Amplitude 1", "parameters": [
+            {"name": "Amplitude 1", "max": 124, "enabled": True, "alert_threshold": 85}]},
+        {"name": "Microphone - Sound level", "parameters": [
+            {"name": "Sound level", "max": 125, "enabled": True, "alert_threshold": 85}]},
+        {"name": "Pressure sensor x 2 [SW]", "parameters": [
+            {"name": "Change in pressure", "max": 8, "enabled": True, "alert_threshold": {"low": 0.3, "high": 0.5}}]},
+        {"name": "Energymeter - Machine load", "parameters": [
+            {"name": "Machine load", "min": 0, "max": 100, "enabled": True, "alert_threshold": 105}]},
+    ]}
+    parsed = parse_alert_profile_thresholds(profile)
+    assert parsed["vibration_danger_mm_s"] == 5.0
+    assert parsed["vibration_warning_mm_s"] == 3.0
+    assert parsed["sound_danger_db"] == 85.0
+    assert parsed["sound_warning_db"] == 125.0
+    assert "pressure_danger_bar" not in parsed
+    assert "load_idle_threshold_pct" not in parsed  # would disable idle detection if set to 0
+
+
+def test_warning_never_exceeds_danger():
+    profile = {"parameters": [{"name": "NTC Temperature sensor x 2", "parameters": [
+        {"name": "Motor temperature", "max": 120, "enabled": True, "alert_threshold": 90}]}]}
+    parsed = parse_alert_profile_thresholds(profile)
+    assert parsed["temp_danger_celsius"] == 90.0
+    assert "temp_warning_celsius" not in parsed
