@@ -179,6 +179,14 @@ def parse_alert_profile_thresholds(alert_profile: Dict[str, Any]) -> Dict[str, f
     return extracted
 
 
+DEFAULT_API_VIBRATION_BANDS: Dict[str, tuple[float, float]] = {
+    "g-sensor-01": (0.0, 0.1),
+    "gbz-rx-1": (0.0, 0.1),
+    "compressor_unit_01": (0.0, 0.1),
+    "compressor": (0.0, 0.1),
+}
+
+
 class DynamicThresholdProvider:
     """
     Central threshold provider.
@@ -271,7 +279,14 @@ class DynamicThresholdProvider:
             machine_id = twin.metadata.get("upstream_machine_id") or machine_id
         with self._lock:
             cached = self._cache.get(machine_id) or {}
-        return dict(cached.get("thresholds") or {})
+        api_t = dict(cached.get("thresholds") or {})
+        if "vibration_band_max" not in api_t:
+            norm = machine_id.strip().lower()
+            if norm in DEFAULT_API_VIBRATION_BANDS:
+                lo, hi = DEFAULT_API_VIBRATION_BANDS[norm]
+                api_t["vibration_band_min"] = lo
+                api_t["vibration_band_max"] = hi
+        return api_t
 
     def sync_twin_thresholds(self, twin: AssetDigitalTwin) -> AssetDigitalTwin:
         """Enriches the twin's thresholds in-place with effective dynamic values."""

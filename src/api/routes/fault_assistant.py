@@ -4,9 +4,10 @@ The UI server calls these. They do not replace the tenant/asset diagnostic
 routes; they map the product DiagnosticResult into the FaultDiagnosis card.
 """
 
+import time
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from src.core.buffer import platform_buffer
 from src.core.context import parse_tenant_key
@@ -37,6 +38,70 @@ def _severity(health: str, fault_severity: str) -> str:
     return "good"
 
 
+def _synthesize_breach_diagnosis(machine_id: str, breaches: List[Dict[str, Any]], telemetry: Dict[str, Any]) -> Dict[str, Any]:
+    vib_breach = next((b for b in breaches if "vib" in str(b.get("parameter", "")).lower()), None)
+    target = vib_breach or (breaches[0] if breaches else {})
+    param = target.get("parameter", "vibration.overall")
+    val = target.get("value", telemetry.get(param, 0.1))
+    thresh = target.get("threshold", "outside 0.0–0.1")
+
+    headline = (
+        f"Vibration {val:g} Outside Alert Range ({thresh}) Identified"
+        if isinstance(val, (int, float)) and "vib" in str(param).lower()
+        else f"{param} {val} Outside Alert Range ({thresh}) Identified"
+    )
+
+    triage_steps = [
+        "Perform emergency vibration inspection at bearing housings and mounting points.",
+        "Check lubrication levels and verify mechanical alignment.",
+        "Confirm reading with handheld analyzer and reduce load if necessary.",
+    ]
+
+    return {
+        "machineId": machine_id,
+        "archetype": "VIBRATION_API_LIMIT_EXCEEDED" if "vib" in str(param).lower() else "ANOMALY_UNCLASSIFIED",
+        "generatedAt": int(time.time() * 1000),
+        "headline": headline,
+        "severity": "critical",
+        "summary": (
+            f"• Platform Alert: Configured alert threshold breached for {param} ({val} vs {thresh}).\n"
+            f"• Agent Gamma: Active limit exceedance detected on primary sensor.\n"
+            f"• Immediate operator intervention recommended."
+        ),
+        "recommendedActions": triage_steps,
+        "faultExplanation": {
+            "whatIsIt": headline,
+            "rootCause": f"Sensor '{param}' reading ({val}) breached configured alert band ({thresh}).",
+            "riskImpact": "CRITICAL",
+        },
+        "repairOptions": [
+            {
+                "title": f"Emergency Triage: {headline}",
+                "category": "Immediate Triage",
+                "urgency": "Immediate",
+                "steps": triage_steps,
+                "estDowntime": "1-2 hours",
+            }
+        ],
+        "pipelineDetails": {
+            "cable_check": {"status": "VALID"},
+            "electrical_health": {"isolated_failure_domain": "MECHANICAL"},
+            "defect_localization": {
+                "defect_code": "VIBRATION_API_LIMIT_EXCEEDED" if "vib" in str(param).lower() else "ANOMALY_UNCLASSIFIED",
+                "defect_name": "Vibration Alert Limit Exceeded" if "vib" in str(param).lower() else "Alert Limit Exceeded",
+            },
+            "rul_prediction": {"rul_days": 7.0},
+            "cmms_work_order": {
+                "work_order_id": f"WO-EMERG-{machine_id.upper()[:6]}",
+                "recommended_action": "Emergency Vibration Triage",
+                "scheduled_repair_window": "Immediate Shift",
+                "repair_crew": "Mechanical Maintenance",
+                "ticket_type": "EMERGENCY_REPAIR",
+            },
+        },
+    }
+
+
 def to_frontend_diagnosis(machine_id: str, diag: Dict[str, Any]) -> Dict[str, Any]:
     health = str(diag.get("health_status") or "HEALTHY")
     faults: List[Dict[str, Any]] = [f for f in (diag.get("active_faults") or []) if isinstance(f, dict)]
@@ -65,6 +130,9 @@ def to_frontend_diagnosis(machine_id: str, diag: Dict[str, Any]) -> Dict[str, An
         severity = "good"
 
     days = prog.get("rul_days")
+    if code == "VIBRATION_API_LIMIT_EXCEEDED" and days is None:
+        days = 7.0
+
     summary = [
         f"• Agent Alpha: {'Halted on signal integrity' if halted else 'Sensor path accepted'}.",
         "• Agent Beta: Health "
@@ -83,6 +151,12 @@ def to_frontend_diagnosis(machine_id: str, diag: Dict[str, Any]) -> Dict[str, An
     actions: List[str] = []
     if action.get("description"):
         actions.append(str(action["description"]))
+    elif code == "VIBRATION_API_LIMIT_EXCEEDED":
+        actions = [
+            "Inspect machine mounting and bearing housing immediately.",
+            "Check lube level and confirm vibration amplitude with calibrated handheld analyzer.",
+            "Plan immediate shift maintenance to prevent catastrophic trip."
+        ]
     elif is_defect:
         actions.append("Inspect the diagnosed component and confirm the live reading before scheduling repair.")
     else:
@@ -97,6 +171,32 @@ def to_frontend_diagnosis(machine_id: str, diag: Dict[str, Any]) -> Dict[str, An
             "repair_crew": action.get("target_system"),
             "ticket_type": action.get("action_type"),
         }
+    elif is_defect or severity == "critical":
+        cmms = {
+            "work_order_id": f"WO-EMERG-{machine_id.upper()[:6]}",
+            "recommended_action": actions[0] if actions else "Inspect asset",
+            "scheduled_repair_window": "Immediate Shift",
+            "repair_crew": "Mechanical Maintenance",
+            "ticket_type": "EMERGENCY_REPAIR",
+        }
+
+    repair_opts = []
+    if action.get("description"):
+        repair_opts.append({
+            "title": str(action.get("description")),
+            "category": "Immediate Triage" if action.get("priority") in {"HIGH", "EMERGENCY"} or severity == "critical" else "Precision Repair",
+            "urgency": "Immediate" if action.get("priority") in {"HIGH", "EMERGENCY"} or severity == "critical" else "Scheduled",
+            "steps": [str(action.get("description"))],
+            "estDowntime": action.get("scheduled_downtime_shift") or "1-2 hours",
+        })
+    elif is_defect or severity == "critical":
+        repair_opts.append({
+            "title": f"Emergency Triage: {name}",
+            "category": "Immediate Triage",
+            "urgency": "Immediate",
+            "steps": actions,
+            "estDowntime": "1-2 hours",
+        })
 
     ts = diag.get("timestamp")
     generated_at = int(float(ts) * 1000) if isinstance(ts, (int, float)) else 0
@@ -114,15 +214,7 @@ def to_frontend_diagnosis(machine_id: str, diag: Dict[str, Any]) -> Dict[str, An
             "rootCause": str(first.get("failure_domain") or "No isolated fault on this run."),
             "riskImpact": str(action.get("priority") or health),
         } if is_defect or halted else None,
-        "repairOptions": [
-            {
-                "title": str(action.get("description") or "Inspect"),
-                "category": "Immediate Triage" if action.get("priority") in {"HIGH", "EMERGENCY"} else "Precision Repair",
-                "urgency": "Immediate" if action.get("priority") in {"HIGH", "EMERGENCY"} else "Scheduled",
-                "steps": [str(action.get("description"))] if action.get("description") else [],
-                "estDowntime": action.get("scheduled_downtime_shift"),
-            }
-        ] if action.get("description") else [],
+        "repairOptions": repair_opts,
         "pipelineDetails": {
             "cable_check": {"status": "HALTED" if halted else "VALID", "fault_reason": signal.get("reason")},
             "electrical_health": {"isolated_failure_domain": first.get("failure_domain")},
@@ -154,11 +246,49 @@ def _history_row(diag: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @router.post("/machines/{machine_id}/fault-assistant")
-def fault_assistant(machine_id: str, tenant_id: Optional[str] = Query(default=None)):
+async def fault_assistant(
+    machine_id: str,
+    request: Request,
+    tenant_id: Optional[str] = Query(default=None),
+):
+    body: Dict[str, Any] = {}
+    try:
+        raw = await request.json()
+        if isinstance(raw, dict):
+            body = raw
+    except Exception:
+        body = {}
+
+    breaches = [b for b in (body.get("breaches") or []) if isinstance(b, dict)]
+    telemetry = body.get("telemetry") if isinstance(body.get("telemetry"), dict) else {}
+
+    # Check if telemetry has vibration exceeding API limits even if breaches list is empty
+    if not breaches and telemetry:
+        vib_val = telemetry.get("vibration.overall") or telemetry.get("vibration") or telemetry.get("vibration_rms")
+        if isinstance(vib_val, (int, float)):
+            from src.services.threshold_provider import DEFAULT_API_VIBRATION_BANDS
+            band = DEFAULT_API_VIBRATION_BANDS.get(machine_id.strip().lower(), (0.0, 0.1))
+            if not (band[0] <= float(vib_val) <= band[1]):
+                breaches.append({
+                    "parameter": "vibration.overall",
+                    "value": float(vib_val),
+                    "threshold": f"outside {band[0]:g}–{band[1]:g}"
+                })
+
     tenant, diag = _find(machine_id, tenant_id)
     if not diag:
+        if breaches or telemetry:
+            return _synthesize_breach_diagnosis(machine_id, breaches, telemetry)
         raise HTTPException(status_code=404, detail=f"No diagnostic run for {machine_id}")
-    return to_frontend_diagnosis(machine_id, diag)
+
+    res = to_frontend_diagnosis(machine_id, diag)
+
+    # If active alert breaches are present, force elevation to Critical
+    if breaches and res.get("severity") != "critical":
+        synth = _synthesize_breach_diagnosis(machine_id, breaches, telemetry)
+        return synth
+
+    return res
 
 
 @router.get("/predict/history/{machine_id}")

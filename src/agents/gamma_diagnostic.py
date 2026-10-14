@@ -318,6 +318,12 @@ class AgentGammaDiagnostic:
         vib_key = twin.resolve_key("primary_vibration")
         value = packet.get_role_value(twin, "primary_vibration") if vib_key else None
         if value is None:
+            for candidate in ("vibration.overall", "vibration", "vibration_rms", "vib_rms", "overall_vibration"):
+                if candidate in packet.signals:
+                    vib_key = candidate
+                    value = packet.signals[candidate]
+                    break
+        if value is None:
             return health_score
         try:
             from src.services.threshold_provider import threshold_provider
