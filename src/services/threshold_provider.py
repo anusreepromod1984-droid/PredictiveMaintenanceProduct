@@ -147,6 +147,10 @@ def parse_alert_profile_thresholds(alert_profile: Dict[str, Any]) -> Dict[str, f
             elif sensor_name == "imu-acceleration" and param_name == "acceleration":
                 put("vibration_danger_mm_s", high)
                 put("vibration_warning_mm_s", val_max)
+                # The platform raises its red alert when the reading leaves this band
+                # ("vibration.overall: 0.1 - outside 0.0-0.1"), so keep it explicitly.
+                put("vibration_band_min", _num(p.get("min")))
+                put("vibration_band_max", val_max)
             elif param_name == "motor temperature":
                 put("temp_danger_celsius", high)
                 put("temp_warning_celsius", val_max)
@@ -258,6 +262,16 @@ class DynamicThresholdProvider:
             }
 
         return effective
+
+    def get_api_thresholds(self, twin: AssetDigitalTwin) -> Dict[str, float]:
+        """Only the limits that came from the upstream API ({} if none / API unavailable)."""
+        self.get_effective_thresholds(twin)  # refreshes the TTL cache if stale
+        machine_id = twin.asset_id
+        if hasattr(twin, "metadata") and isinstance(twin.metadata, dict):
+            machine_id = twin.metadata.get("upstream_machine_id") or machine_id
+        with self._lock:
+            cached = self._cache.get(machine_id) or {}
+        return dict(cached.get("thresholds") or {})
 
     def sync_twin_thresholds(self, twin: AssetDigitalTwin) -> AssetDigitalTwin:
         """Enriches the twin's thresholds in-place with effective dynamic values."""

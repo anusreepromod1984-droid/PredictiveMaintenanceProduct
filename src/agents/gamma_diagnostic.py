@@ -262,6 +262,13 @@ class AgentGammaDiagnostic:
             )
 
         # -----------------------------------------------------------------
+        # API alert band: the upstream platform raises its alert when vibration leaves
+        # [min, max]. ISO zones alone can call the same reading healthy, so honour the
+        # API band for every vertical. No API limit for the machine -> nothing changes.
+        # -----------------------------------------------------------------
+        health_score = self._apply_api_vibration_band(packet, twin, faults, health_score)
+
+        # -----------------------------------------------------------------
         # SBM Fusion: add SBM pre-alarm as an additional fault if CUSUM fired
         # but no hard threshold was triggered yet (early-warning use case)
         # -----------------------------------------------------------------
@@ -300,6 +307,39 @@ class AgentGammaDiagnostic:
             "sbm_analysis": sbm_result,
             "spectral_report": spectral_report,
         }
+
+    def _apply_api_vibration_band(
+        self,
+        packet: IngestTelemetryPacket,
+        twin: AssetDigitalTwin,
+        faults: List[FaultRecord],
+        health_score: float,
+    ) -> float:
+        vib_key = twin.resolve_key("primary_vibration")
+        value = packet.get_role_value(twin, "primary_vibration") if vib_key else None
+        if value is None:
+            return health_score
+        try:
+            from src.services.threshold_provider import threshold_provider
+            api = threshold_provider.get_api_thresholds(twin)
+        except Exception as e:
+            logger.debug(f"API vibration band unavailable: {e}")
+            return health_score
+        hi = api.get("vibration_band_max")
+        lo = api.get("vibration_band_min", 0.0)
+        if hi is None or (lo <= value <= hi):
+            return health_score
+        faults.append(FaultRecord(
+            fault_code="VIBRATION_API_LIMIT_EXCEEDED",
+            description=f"Vibration {value:g} mm/s is outside the configured alert range {lo:g}-{hi:g} mm/s",
+            severity="CRITICAL",
+            confidence=0.95,
+            failure_domain="MECHANICAL",
+            triggering_signal=vib_key,
+            triggering_value=value,
+            threshold=hi,
+        ))
+        return min(health_score, 25.0)
 
     def _run_sbm(self, packet: IngestTelemetryPacket, twin: AssetDigitalTwin, context: TenantContext) -> Optional[Dict[str, Any]]:
         """Run SBM estimation and feed the current sample to train the model."""

@@ -169,3 +169,55 @@ def test_warning_never_exceeds_danger():
     parsed = parse_alert_profile_thresholds(profile)
     assert parsed["temp_danger_celsius"] == 90.0
     assert "temp_warning_celsius" not in parsed
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: API vibration band must reach the diagnosis (AI Assistant card)
+# ---------------------------------------------------------------------------
+def _band_profile(lo, hi, alert):
+    return {"parameters": [{"name": "IMU-Acceleration", "parameters": [
+        {"name": "Acceleration", "min": lo, "max": hi, "enabled": True,
+         "direction": "high", "alert_threshold": alert}]}]}
+
+
+def _run_pipeline(monkeypatch, vib, profile):
+    from src.agents.dynamic_orchestrator import global_orchestrator
+    from src.schemas.telemetry import IngestTelemetryPacket
+    from src.services import threshold_provider as tp
+
+    twin = AssetDigitalTwin(
+        tenant_id="t_api", asset_id="api_machine_x", name="API Machine",
+        vertical="manufacturing", asset_class="rotating_machinery",
+        signal_map={"primary_vibration": "vib"},
+    )
+
+    class _Client(UpstreamFleetClient):
+        def query(self, body):
+            if profile is None:
+                return None
+            return {"machines": [{"machineId": "api_machine_x", "alertProfile": profile}]}
+
+    provider = DynamicThresholdProvider(client=_Client(api_key="k"))
+    monkeypatch.setattr(tp, "threshold_provider", provider)
+    packet = IngestTelemetryPacket(tenant_id="t_api", asset_id="api_machine_x", signals={"vib": vib})
+    return global_orchestrator.run_pipeline(packet, twin, None)
+
+
+def test_api_band_breach_is_critical_even_when_iso_says_healthy(monkeypatch):
+    res = _run_pipeline(monkeypatch, vib=0.1176, profile=_band_profile(0, 0.1, 5))
+    codes = [f.fault_code for f in res.active_faults]
+    assert "VIBRATION_API_LIMIT_EXCEEDED" in codes
+    fault = next(f for f in res.active_faults if f.fault_code == "VIBRATION_API_LIMIT_EXCEEDED")
+    assert fault.severity == "CRITICAL"
+    assert "0-0.1" in fault.description
+    assert res.health_status == "CRITICAL"
+
+
+def test_reading_inside_api_band_stays_healthy(monkeypatch):
+    res = _run_pipeline(monkeypatch, vib=0.05, profile=_band_profile(0, 0.1, 5))
+    assert "VIBRATION_API_LIMIT_EXCEEDED" not in [f.fault_code for f in res.active_faults]
+
+
+def test_no_api_limit_means_no_change(monkeypatch):
+    res = _run_pipeline(monkeypatch, vib=0.1176, profile=None)
+    assert "VIBRATION_API_LIMIT_EXCEEDED" not in [f.fault_code for f in res.active_faults]
