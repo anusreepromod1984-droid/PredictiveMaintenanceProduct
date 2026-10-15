@@ -39,16 +39,35 @@ def _severity(health: str, fault_severity: str) -> str:
 
 
 def _synthesize_breach_diagnosis(machine_id: str, breaches: List[Dict[str, Any]], telemetry: Dict[str, Any]) -> Dict[str, Any]:
-    vib_breach = next((b for b in breaches if "vib" in str(b.get("parameter", "")).lower()), None)
-    target = vib_breach or (breaches[0] if breaches else {})
-    param = target.get("parameter", "vibration.overall")
-    val = target.get("value", telemetry.get(param, 0.1))
-    thresh = target.get("threshold", "outside 0.0–0.1")
+    def is_vib(b: Dict[str, Any]) -> bool:
+        field = str(b.get("paramName") or b.get("parameter") or b.get("key") or "").lower()
+        return "vib" in field or "accel" in field
 
+    vib_breach = next((b for b in breaches if is_vib(b)), None)
+    target = vib_breach or (breaches[0] if breaches else {})
+    param = target.get("paramName") or target.get("parameter") or target.get("key") or "vibration.overall"
+    val = target.get("value")
+    if val is None and telemetry:
+        val = telemetry.get(param) or telemetry.get("vibration.overall") or telemetry.get("vibration") or 0.1
+    elif val is None:
+        val = 0.1
+
+    raw_thresh = target.get("threshold")
+    if isinstance(raw_thresh, dict):
+        lo = raw_thresh.get("low", 0.0)
+        hi = raw_thresh.get("high", 0.1)
+        thresh = f"outside {lo:g}–{hi:g}"
+    elif raw_thresh:
+        thresh = str(raw_thresh)
+    else:
+        thresh = "outside 0.0–0.1"
+
+    val_str = f"{val:g}" if isinstance(val, (int, float)) else str(val)
+    is_v = "vib" in str(param).lower() or is_vib(target)
     headline = (
-        f"Vibration {val:g} Outside Alert Range ({thresh}) Identified"
-        if isinstance(val, (int, float)) and "vib" in str(param).lower()
-        else f"{param} {val} Outside Alert Range ({thresh}) Identified"
+        f"Vibration {val_str} Outside Alert Range ({thresh}) Identified"
+        if is_v
+        else f"{param} {val_str} Outside Alert Range ({thresh}) Identified"
     )
 
     triage_steps = [
@@ -59,19 +78,19 @@ def _synthesize_breach_diagnosis(machine_id: str, breaches: List[Dict[str, Any]]
 
     return {
         "machineId": machine_id,
-        "archetype": "VIBRATION_API_LIMIT_EXCEEDED" if "vib" in str(param).lower() else "ANOMALY_UNCLASSIFIED",
+        "archetype": "VIBRATION_API_LIMIT_EXCEEDED" if is_v else "ANOMALY_UNCLASSIFIED",
         "generatedAt": int(time.time() * 1000),
         "headline": headline,
         "severity": "critical",
         "summary": (
-            f"• Platform Alert: Configured alert threshold breached for {param} ({val} vs {thresh}).\n"
+            f"• Platform Alert: Configured alert threshold breached for {param} ({val_str} vs {thresh}).\n"
             f"• Agent Gamma: Active limit exceedance detected on primary sensor.\n"
             f"• Immediate operator intervention recommended."
         ),
         "recommendedActions": triage_steps,
         "faultExplanation": {
             "whatIsIt": headline,
-            "rootCause": f"Sensor '{param}' reading ({val}) breached configured alert band ({thresh}).",
+            "rootCause": f"Sensor '{param}' reading ({val_str}) breached configured alert band ({thresh}).",
             "riskImpact": "CRITICAL",
         },
         "repairOptions": [
@@ -284,7 +303,7 @@ async def fault_assistant(
     res = to_frontend_diagnosis(machine_id, diag)
 
     # If active alert breaches are present, force elevation to Critical
-    if breaches and res.get("severity") != "critical":
+    if breaches and (res.get("severity") != "critical" or "NORMAL" in str(res.get("archetype")) or "STANDBY" in str(res.get("archetype"))):
         synth = _synthesize_breach_diagnosis(machine_id, breaches, telemetry)
         return synth
 
