@@ -57,6 +57,7 @@ def get_asset_thresholds(tenant_id: str, asset_id: str):
         "asset_id": asset_id,
         "effective_thresholds": effective,
         "source": cache_info.get("source", "local_fallback"),
+        "details": cache_info.get("details"),
         "cached_at": cache_info.get("ts"),
         "local_baseline_thresholds": a.thresholds
     }

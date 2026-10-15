@@ -29,6 +29,12 @@ class AssetDigitalTwin(BaseModel):
     vertical: str = Field(..., description="'heavy_machinery', 'electronics_smt', 'hvac', etc.")
     criticality: int = Field(default=3, ge=1, le=5, description="1 (low) to 5 (mission-critical)")
     
+    # Machine Details & Specifications
+    make: Optional[str] = Field(default=None, description="Equipment manufacturer/make e.g. 'Atlas Copco', 'Siemens', 'Propel'")
+    model: Optional[str] = Field(default=None, description="Equipment model number/series e.g. 'GA-37', '1LE1', 'AV-4'")
+    year_of_manufacture: Optional[int] = Field(default=None, description="Year of manufacture or commissioning e.g. 2018")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Arbitrary asset metadata e.g. spec_url, custom attributes")
+
     # Semantic Mapping: Standard Diagnostic Role -> Client Ingestion Key
     # e.g. {"primary_vibration": "drive_vib_de_rms", "bearing_temp": "temp_bearing_c"}
     signal_map: Dict[str, str] = Field(

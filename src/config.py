@@ -75,6 +75,14 @@ class Settings(BaseSettings):
     AI_SERVICE_TIMEOUT_S: float = float(os.environ.get("AI_SERVICE_TIMEOUT_S", "5.0"))
     THRESHOLD_CACHE_TTL_SEC: float = float(os.environ.get("THRESHOLD_CACHE_TTL_SEC", "300.0"))
 
+    # -----------------------------------------------------------------------
+    # Machine Specs & Internet Search Agent
+    # -----------------------------------------------------------------------
+    INTERNET_SPEC_SEARCH_ENABLED: bool = os.environ.get("INTERNET_SPEC_SEARCH_ENABLED", "true").lower() in ("1", "true", "yes")
+    INTERNET_SPEC_SEARCH_URL: str = os.environ.get("INTERNET_SPEC_SEARCH_URL", "")
+    INTERNET_SPEC_SEARCH_API_KEY: str = os.environ.get("INTERNET_SPEC_SEARCH_API_KEY", "")
+    INTERNET_SPEC_TIMEOUT_S: float = float(os.environ.get("INTERNET_SPEC_TIMEOUT_S", "4.0"))
+
     def get_cors_origins(self) -> List[str]:
         if self.CORS_ORIGINS == "*":
             return ["*"]

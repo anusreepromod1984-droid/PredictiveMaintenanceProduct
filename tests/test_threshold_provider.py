@@ -221,3 +221,308 @@ def test_reading_inside_api_band_stays_healthy(monkeypatch):
 def test_no_api_limit_means_no_change(monkeypatch):
     res = _run_pipeline(monkeypatch, vib=0.1176, profile=None)
     assert "VIBRATION_API_LIMIT_EXCEEDED" not in [f.fault_code for f in res.active_faults]
+
+
+def test_env_file_threshold_resolution(monkeypatch):
+    from src.services.threshold_provider import resolve_env_thresholds
+
+    monkeypatch.setenv("VIBRATION_ALERT_BAND_MY_PUMP_01", "0.0,0.45")
+    monkeypatch.setenv("VIBRATION_DANGER_MY_PUMP_01", "4.5")
+    monkeypatch.setenv("MACHINE_THRESHOLDS_JSON", '{"custom_motor": {"vibration_band_max": 0.2, "temp_danger_celsius": 88.0}}')
+
+    res1 = resolve_env_thresholds("my_pump_01")
+    assert res1["vibration_band_min"] == 0.0
+    assert res1["vibration_band_max"] == 0.45
+    assert res1["vibration_danger_mm_s"] == 4.5
+
+    res2 = resolve_env_thresholds("custom_motor")
+    assert res2["vibration_band_max"] == 0.2
+    assert res2["temp_danger_celsius"] == 88.0
+
+
+def test_machine_spec_iso_standards_resolution():
+    from src.services.threshold_provider import resolve_machine_spec_thresholds
+
+    # Small machine < 15 kW -> ISO 20816 Class I (Warning 1.8, Danger 4.5)
+    twin_small = AssetDigitalTwin(
+        tenant_id="t1",
+        asset_id="fan_01",
+        name="Exhaust Fan 7.5kW",
+        vertical="manufacturing",
+        asset_class="centrifugal_fan",
+        kinematics={"rated_kw": 7.5},
+    )
+    spec_small = resolve_machine_spec_thresholds(twin_small)
+    assert spec_small["vibration_warning_mm_s"] == 1.8
+    assert spec_small["vibration_danger_mm_s"] == 4.5
+
+    # Medium machine 15-75 kW -> ISO 20816 Class II (Warning 2.8, Danger 7.1)
+    twin_med = AssetDigitalTwin(
+        tenant_id="t1",
+        asset_id="pump_01",
+        name="Feed Pump 37kW",
+        vertical="water_treatment",
+        asset_class="centrifugal_pump",
+        kinematics={"rated_kw": 37.0},
+    )
+    spec_med = resolve_machine_spec_thresholds(twin_med)
+    assert spec_med["vibration_warning_mm_s"] == 2.8
+    assert spec_med["vibration_danger_mm_s"] == 7.1
+
+    # Precision electronics / SMT
+    twin_smt = AssetDigitalTwin(
+        tenant_id="t2",
+        asset_id="smt_pnp",
+        name="Pick and Place Head",
+        vertical="electronics_smt",
+        asset_class="smt_pick_place",
+    )
+    spec_smt = resolve_machine_spec_thresholds(twin_smt)
+    assert spec_smt["vibration_warning_mm_s"] == 0.8
+    assert spec_smt["vibration_danger_mm_s"] == 1.5
+
+    # Compressor -> ISO 10816-8
+    twin_comp = AssetDigitalTwin(
+        tenant_id="t3",
+        asset_id="rotary_comp",
+        name="Rotary Screw Compressor",
+        vertical="industrial_gas",
+        asset_class="compressor",
+    )
+    spec_comp = resolve_machine_spec_thresholds(twin_comp)
+    assert spec_comp["vibration_warning_mm_s"] == 4.5
+    assert spec_comp["vibration_danger_mm_s"] == 7.1
+    assert spec_comp["compressor_temp_danger_celsius"] == 105.0
+
+
+def test_four_tier_resolution_hierarchy(monkeypatch):
+    """
+    Tier 1 (API) overrides Tier 2 (Env)
+    Tier 2 (Env) overrides Tier 3 (Machine Spec)
+    Tier 3 (Machine Spec) overrides Tier 4 (Twin Baseline)
+    """
+    twin = AssetDigitalTwin(
+        tenant_id="t_prec",
+        asset_id="prec_asset_01",
+        name="Feed Pump 45kW",
+        vertical="general",
+        asset_class="centrifugal_pump",
+        kinematics={"rated_kw": 45.0},
+        thresholds={"vibration_warning_mm_s": 9.9, "vibration_danger_mm_s": 15.0},
+    )
+
+    # 1. No API, no Env -> Machine spec applies (Class II: warning 2.8, danger 7.1)
+    provider_spec = DynamicThresholdProvider(client=UpstreamFleetClient(api_key=""))
+    eff1 = provider_spec.get_effective_thresholds(twin)
+    assert eff1["vibration_warning_mm_s"] == 2.8
+    assert eff1["vibration_danger_mm_s"] == 7.1
+
+    # 2. Env set -> overrides Machine spec
+    monkeypatch.setenv("VIBRATION_WARNING_PREC_ASSET_01", "3.2")
+    provider_env = DynamicThresholdProvider(client=UpstreamFleetClient(api_key=""))
+    eff2 = provider_env.get_effective_thresholds(twin)
+    assert eff2["vibration_warning_mm_s"] == 3.2
+
+    # 3. API set -> overrides Env
+    class MockApiClient(UpstreamFleetClient):
+        def query(self, body):
+            return {
+                "machines": [
+                    {
+                        "machineId": "prec_asset_01",
+                        "alertProfile": {
+                            "sensors": [
+                                {
+                                    "name": "IMU-Acceleration",
+                                    "parameters": [
+                                        {"name": "Acceleration", "max": 1.2, "alert_threshold": 2.1}
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+
+    provider_api = DynamicThresholdProvider(client=MockApiClient(api_key="valid_key"))
+    eff3 = provider_api.get_effective_thresholds(twin)
+    assert eff3["vibration_warning_mm_s"] == 1.2
+    assert eff3["vibration_danger_mm_s"] == 2.1
+
+
+def test_extract_machine_details():
+    from src.services.threshold_provider import extract_machine_details
+
+    # Test extraction from explicit twin fields
+    twin1 = AssetDigitalTwin(
+        tenant_id="t1",
+        asset_id="atlas_ga37",
+        name="Screw Compressor",
+        vertical="industrial",
+        asset_class="compressor",
+        make="Atlas Copco",
+        model="GA-37",
+        year_of_manufacture=2019,
+        kinematics={"rated_kw": 37.0, "mounting_type": "flexible"},
+    )
+    details1 = extract_machine_details(twin1)
+    assert details1["make"] == "Atlas Copco"
+    assert details1["model"] == "GA-37"
+    assert details1["year"] == 2019
+    assert details1["power_kw"] == 37.0
+    assert details1["mounting"] == "flexible"
+
+    # Test extraction from name string and regex parsing
+    twin2 = AssetDigitalTwin(
+        tenant_id="t2",
+        asset_id="siemens_fan_01",
+        name="Siemens 1LE1 Exhaust Fan 45kW 2015",
+        vertical="manufacturing",
+        asset_class="fan",
+    )
+    details2 = extract_machine_details(twin2)
+    assert details2["make"] == "Siemens"
+    assert details2["model"] == "1LE1"
+    assert details2["year"] == 2015
+    assert details2["power_kw"] == 45.0
+
+
+def test_apply_machine_age_adjustment():
+    from src.services.threshold_provider import apply_machine_age_adjustment
+
+    base = {
+        "vibration_warning_mm_s": 4.5,
+        "vibration_danger_mm_s": 7.1,
+        "temp_warning_celsius": 80.0,
+        "temp_danger_celsius": 95.0,
+    }
+
+    # 1. Brand new machine (e.g. 2025, 1 year old) -> commissioning tolerance factor 0.85
+    new_m = apply_machine_age_adjustment(base, year_of_make=2025, current_year=2026)
+    assert new_m["age_years"] == 1.0
+    assert new_m["age_adjustment_factor"] == 0.85
+    assert new_m["vibration_warning_mm_s"] == 3.82  # 4.5 * 0.85
+    assert new_m["vibration_band_max"] == 3.82
+    assert new_m["vibration_danger_mm_s"] == 7.1  # danger ceiling maintained
+
+    # 2. Prime nominal service (e.g. 2020, 6 years old) -> factor 1.0
+    prime_m = apply_machine_age_adjustment(base, year_of_make=2020, current_year=2026)
+    assert prime_m["age_years"] == 6.0
+    assert prime_m["age_adjustment_factor"] == 1.0
+    assert prime_m["vibration_warning_mm_s"] == 4.5
+
+    # 3. Mature aged service (e.g. 2012, 14 years old) -> +2% per yr over 10 (+8% -> 1.08)
+    aged_m = apply_machine_age_adjustment(base, year_of_make=2012, current_year=2026)
+    assert aged_m["age_years"] == 14.0
+    assert aged_m["age_adjustment_factor"] == 1.08
+    assert aged_m["vibration_warning_mm_s"] == 4.86  # 4.5 * 1.08
+    assert aged_m["vibration_band_max"] == 4.86
+
+    # 4. Vintage machine (e.g. 2000, 26 years old) -> factor capped at 1.30, thermal derating
+    vintage_m = apply_machine_age_adjustment(base, year_of_make=2000, current_year=2026)
+    assert vintage_m["age_years"] == 26.0
+    assert vintage_m["age_adjustment_factor"] == 1.30  # capped at +30%
+    assert vintage_m["vibration_warning_mm_s"] == 5.85  # 4.5 * 1.30
+    assert vintage_m["temp_danger_celsius"] == 92.0  # 95 - (26 - 20) * 0.5
+
+
+def test_oem_spec_catalog_and_make_resolution():
+    from src.services.threshold_provider import resolve_machine_spec_thresholds
+
+    # Kaeser Compressor
+    twin_kaeser = AssetDigitalTwin(
+        tenant_id="t1",
+        asset_id="comp_kaeser",
+        name="Kaeser BSD 75 Screw Compressor",
+        vertical="industrial",
+        asset_class="compressor",
+        year_of_manufacture=2018,  # 8 years old -> nominal factor 1.0
+    )
+    kaeser_t = resolve_machine_spec_thresholds(twin_kaeser)
+    assert kaeser_t["vibration_warning_mm_s"] == 4.0
+    assert kaeser_t["vibration_danger_mm_s"] == 6.5
+    assert kaeser_t["compressor_temp_warning_celsius"] == 90.0
+    assert kaeser_t["compressor_temp_danger_celsius"] == 105.0
+
+    # Propel Crusher
+    twin_propel = AssetDigitalTwin(
+        tenant_id="t2",
+        asset_id="crusher_propel",
+        name="Propel AV-4 Cone Crusher",
+        vertical="heavy_machinery",
+        asset_class="crusher",
+        year_of_manufacture=2019,
+    )
+    propel_t = resolve_machine_spec_thresholds(twin_propel)
+    assert propel_t["vibration_warning_mm_s"] == 7.1
+    assert propel_t["vibration_danger_mm_s"] == 11.2
+
+
+def test_internet_spec_mock_service(monkeypatch):
+    from src.services.threshold_provider import (
+        DynamicThresholdProvider,
+        UpstreamFleetClient,
+        resolve_machine_spec_thresholds,
+    )
+    import httpx
+
+    # Test direct spec_url in metadata
+    class MockResponse:
+        status_code = 200
+        def json(self):
+            return {
+                "vibration_warning_mm_s": 2.2,
+                "vibration_danger_mm_s": 5.0,
+                "temp_warning_celsius": 70.0,
+                "temp_danger_celsius": 85.0,
+            }
+
+    def mock_get(url, *args, **kwargs):
+        return MockResponse()
+
+    monkeypatch.setattr(httpx.Client, "get", mock_get)
+
+    twin_online = AssetDigitalTwin(
+        tenant_id="t_online",
+        asset_id="custom_turbo_chiller",
+        name="Custom Centrifugal Chiller",
+        vertical="hvac",
+        asset_class="chiller",
+        metadata={"spec_url": "https://specs.industrial-oem.com/models/chiller-700.json"},
+    )
+
+    t_online = resolve_machine_spec_thresholds(twin_online)
+    assert t_online["vibration_warning_mm_s"] == 2.2
+    assert t_online["vibration_danger_mm_s"] == 5.0
+    assert t_online["vibration_band_max"] == 2.2
+
+
+def test_end_to_end_make_and_year_threshold_provider():
+    twin_aged = AssetDigitalTwin(
+        tenant_id="t_mfg",
+        asset_id="aged_compressor_01",
+        name="Atlas Copco GA-37 2012 Screw Compressor",
+        vertical="industrial",
+        asset_class="compressor",
+        year_of_manufacture=2012,
+    )
+
+    provider = DynamicThresholdProvider(client=UpstreamFleetClient(api_key=""))
+    eff = provider.get_effective_thresholds(twin_aged)
+
+    # 2026 - 2012 = 14 years old -> factor = 1.0 + (14-10)*0.02 = 1.08
+    # 4.5 * 1.08 = 4.86 mm/s
+    assert eff["vibration_warning_mm_s"] == 4.86
+    assert eff["vibration_danger_mm_s"] == 7.1
+    assert eff["compressor_temp_danger_celsius"] == 110.0
+    assert eff["vibration_band_max"] == 4.86
+
+    # Cache status checks
+    cache_info = provider.get_cache_status("aged_compressor_01")
+    assert cache_info is not None
+    assert cache_info["source"] == "internet_machine_spec"
+    assert cache_info["details"]["make"] == "Atlas Copco"
+    assert cache_info["details"]["year"] == 2012
+    assert cache_info["details"]["power_kw"] == 37.0
+
+
