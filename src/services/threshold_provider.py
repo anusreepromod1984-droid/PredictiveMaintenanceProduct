@@ -32,16 +32,24 @@ class UpstreamAPIError(RuntimeError):
 
 
 class UpstreamFleetClient:
-    """HTTP client for upstream PDM AI Query service."""
+    """HTTP client for upstream PDM AI Query service with circuit breaker & resiliency."""
 
     def __init__(self, base_url: Optional[str] = None, api_key: Optional[str] = None, timeout_s: Optional[float] = None):
         self.base_url = (base_url or settings.AI_SERVICE_BASE_URL).rstrip("/")
         self.api_key = (api_key or settings.AI_SERVICE_API_KEY).strip()
         self.timeout_s = timeout_s if timeout_s is not None else settings.AI_SERVICE_TIMEOUT_S
+        self._consecutive_failures = 0
+        self._circuit_open_until = 0.0
+        self._failure_threshold = 3
+        self._recovery_timeout_s = 30.0
 
     @property
     def is_configured(self) -> bool:
         return bool(self.api_key)
+
+    @property
+    def is_circuit_open(self) -> bool:
+        return time.time() < self._circuit_open_until
 
     def _headers(self) -> Dict[str, str]:
         return {
@@ -56,9 +64,18 @@ class UpstreamFleetClient:
             return f"{self.base_url}{clean_path[4:]}"
         return f"{self.base_url}{clean_path}"
 
+    def _record_failure(self):
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= self._failure_threshold:
+            self._circuit_open_until = time.time() + self._recovery_timeout_s
+            logger.warning(
+                f"Upstream circuit breaker tripped after {self._consecutive_failures} failures. "
+                f"Pausing upstream calls for {self._recovery_timeout_s}s."
+            )
+
     def get_capabilities(self) -> Optional[Dict[str, Any]]:
         """GET /api/ai/query/capabilities (allowed includes, visible machines, limits)."""
-        if not self.is_configured:
+        if not self.is_configured or self.is_circuit_open:
             return None
 
         urls = [self._build_url("/api/ai/query/capabilities"), self._build_url("/ai/query/capabilities")]
@@ -67,14 +84,17 @@ class UpstreamFleetClient:
                 with httpx.Client(timeout=self.timeout_s) as client:
                     resp = client.get(url, headers=self._headers())
                     if resp.status_code == 200:
+                        self._consecutive_failures = 0
+                        self._circuit_open_until = 0.0
                         return resp.json()
             except Exception as e:
                 logger.debug(f"Capabilities call failed on {url}: {e}")
+        self._record_failure()
         return None
 
     def query(self, body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """POST /api/ai/query."""
-        if not self.is_configured:
+        if not self.is_configured or self.is_circuit_open:
             return None
 
         urls = [self._build_url("/api/ai/query"), self._build_url("/ai/query")]
@@ -83,11 +103,14 @@ class UpstreamFleetClient:
                 with httpx.Client(timeout=self.timeout_s) as client:
                     resp = client.post(url, headers=self._headers(), json=body)
                     if resp.status_code == 200:
+                        self._consecutive_failures = 0
+                        self._circuit_open_until = 0.0
                         return resp.json()
                     else:
                         logger.warning(f"Upstream query failed ({resp.status_code}): {resp.text[:200]}")
             except Exception as e:
                 logger.warning(f"Upstream query network error on {url}: {e}")
+        self._record_failure()
         return None
 
 

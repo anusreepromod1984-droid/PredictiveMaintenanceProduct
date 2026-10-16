@@ -25,22 +25,33 @@ class Settings(BaseSettings):
     STALE_SENSOR_THRESHOLD_SEC: float = 30.0
 
     # CORS
-    CORS_ORIGINS: str = "*"
+    CORS_ORIGINS: str = os.environ.get(
+        "CORS_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000,https://predictive-maintenance-system.vercel.app"
+        if os.environ.get("ENVIRONMENT", "production") == "production"
+        else "*",
+    )
 
     # -----------------------------------------------------------------------
     # Production: Persistent Historian
     # -----------------------------------------------------------------------
-    # Set HISTORIAN_DB_PATH to a TimescaleDB/PostgreSQL DSN for cloud deployments.
-    # Example: "postgresql+psycopg2://user:pass@tsdb-host:5432/apms"
+    # Set HISTORIAN_DSN or DATABASE_URL or HISTORIAN_DB_PATH to a TimescaleDB/PostgreSQL DSN for cloud deployments.
+    # Example: "postgresql://user:pass@tsdb-host:5432/apms"
     # Leave as default for local SQLite (dev/staging)
-    HISTORIAN_DB_PATH: str = os.environ.get("HISTORIAN_DB_PATH", "./data/apms_historian.db")
+    HISTORIAN_DB_PATH: str = os.environ.get(
+        "HISTORIAN_DSN",
+        os.environ.get("DATABASE_URL", os.environ.get("HISTORIAN_DB_PATH", "./data/apms_historian.db")),
+    )
     HISTORIAN_RETAIN_DAYS: int = int(os.environ.get("HISTORIAN_RETAIN_DAYS", "90"))
 
     # -----------------------------------------------------------------------
     # Security (JWT + API Keys)
     # -----------------------------------------------------------------------
-    # APMS_AUTH_DISABLED=true disables auth entirely for local development
-    AUTH_DISABLED: bool = os.environ.get("APMS_AUTH_DISABLED", "true").lower() in ("1", "true", "yes")
+    # APMS_AUTH_DISABLED=true disables auth entirely for local development. Defaults to false in production.
+    AUTH_DISABLED: bool = os.environ.get(
+        "APMS_AUTH_DISABLED",
+        "false" if os.environ.get("ENVIRONMENT", "production") == "production" else "true",
+    ).lower() in ("1", "true", "yes")
     JWT_SECRET: str = os.environ.get("APMS_JWT_SECRET", "CHANGEME_USE_VAULT_IN_PRODUCTION_32CHARS")
     JWT_EXPIRY_SECONDS: int = int(os.environ.get("APMS_JWT_EXPIRY", "86400"))
 
@@ -73,6 +84,12 @@ class Settings(BaseSettings):
     AI_SERVICE_BASE_URL: str = os.environ.get("AI_SERVICE_BASE_URL", "http://168.144.37.186:4000")
     AI_SERVICE_API_KEY: str = os.environ.get("AI_SERVICE_API_KEY", "")
     AI_SERVICE_TIMEOUT_S: float = float(os.environ.get("AI_SERVICE_TIMEOUT_S", "5.0"))
+    FLEET_MQTT_FROM_QUERY: bool = os.environ.get("FLEET_MQTT_FROM_QUERY", "false").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    FLEET_MQTT_MACHINE_ID: str = os.environ.get("FLEET_MQTT_MACHINE_ID", "")
     THRESHOLD_CACHE_TTL_SEC: float = float(os.environ.get("THRESHOLD_CACHE_TTL_SEC", "300.0"))
 
     # -----------------------------------------------------------------------

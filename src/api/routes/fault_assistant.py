@@ -7,25 +7,44 @@ routes; they map the product DiagnosticResult into the FaultDiagnosis card.
 import time
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Security
 
 from src.core.buffer import platform_buffer
 from src.core.context import parse_tenant_key
 from src.db.historian import platform_historian
+from src.services.fleet_live_diagnosis import try_fleet_live_diagnosis
+from src.services.fleet_machine_resolver import resolve_fleet_machine
+from src.middleware.auth import get_current_principal, assert_tenant_access
 
 router = APIRouter(prefix="/api/v1", tags=["Dashboard card"])
 
 
 def _find(machine_id: str, tenant_id: Optional[str]) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
     wanted = machine_id.strip().lower()
+    # 1. First check hot in-memory cache for exact tenant or any tenant matching asset
+    with platform_buffer._lock:
+        if tenant_id:
+            key = make_tenant_key(tenant_id, machine_id)
+            if key in platform_buffer._latest_diagnostics:
+                return tenant_id, platform_buffer._latest_diagnostics[key]
+        for key, diag in platform_buffer._latest_diagnostics.items():
+            t, a = parse_tenant_key(key)
+            if a.lower() == wanted:
+                return t, diag
+
+    # 2. Fall back to resolved tenant (including historian)
+    resolved = resolve_fleet_machine(machine_id, tenant_id)
+    if resolved:
+        t_id, a_id, _twin, _tp = resolved
+        diag = platform_buffer.get_latest_diagnostic(t_id, a_id)
+        if diag:
+            return t_id, diag
+
     if tenant_id:
         diag = platform_buffer.get_latest_diagnostic(tenant_id, machine_id)
-        return tenant_id, diag
-    with platform_buffer._lock:
-        for key, diag in platform_buffer._latest_diagnostics.items():
-            tenant, asset = parse_tenant_key(key)
-            if asset.lower() == wanted:
-                return tenant, diag
+        if diag:
+            return tenant_id, diag
+
     return None, None
 
 
@@ -269,7 +288,14 @@ async def fault_assistant(
     machine_id: str,
     request: Request,
     tenant_id: Optional[str] = Query(default=None),
+    principal: Dict[str, Any] = Security(get_current_principal),
 ):
+    resolved = resolve_fleet_machine(machine_id, tenant_id)
+    if resolved:
+        assert_tenant_access(principal, resolved[0])
+    elif tenant_id:
+        assert_tenant_access(principal, tenant_id)
+
     body: Dict[str, Any] = {}
     try:
         raw = await request.json()
@@ -280,6 +306,19 @@ async def fault_assistant(
 
     breaches = [b for b in (body.get("breaches") or []) if isinstance(b, dict)]
     telemetry = body.get("telemetry") if isinstance(body.get("telemetry"), dict) else {}
+
+    fleet_result, fleet_alerts, _fleet_block = try_fleet_live_diagnosis(machine_id, tenant_id)
+    if fleet_alerts and not breaches:
+        breaches = fleet_alerts
+    if fleet_result is not None:
+        res = to_frontend_diagnosis(machine_id, fleet_result.model_dump())
+        if breaches and (
+            res.get("severity") != "critical"
+            or "NORMAL" in str(res.get("archetype"))
+            or "STANDBY" in str(res.get("archetype"))
+        ):
+            return _synthesize_breach_diagnosis(machine_id, breaches, telemetry)
+        return res
 
     # Check if telemetry has vibration exceeding API limits even if breaches list is empty
     if not breaches and telemetry:
@@ -311,7 +350,18 @@ async def fault_assistant(
 
 
 @router.get("/predict/history/{machine_id}")
-def diagnosis_history(machine_id: str, limit: int = 20, tenant_id: Optional[str] = Query(default=None)):
+def diagnosis_history(
+    machine_id: str,
+    limit: int = 20,
+    tenant_id: Optional[str] = Query(default=None),
+    principal: Dict[str, Any] = Security(get_current_principal),
+):
+    resolved = resolve_fleet_machine(machine_id, tenant_id)
+    if resolved:
+        assert_tenant_access(principal, resolved[0])
+    elif tenant_id:
+        assert_tenant_access(principal, tenant_id)
+
     tenant, _diag = _find(machine_id, tenant_id)
     if not tenant:
         return []

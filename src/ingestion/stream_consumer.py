@@ -22,7 +22,7 @@ import asyncio
 import json
 import os
 import time
-from typing import Dict, Any, Optional, Callable, Awaitable
+from typing import Dict, Any, Optional, Callable, Awaitable, List
 
 from src.utils.logger import get_logger
 
@@ -71,12 +71,16 @@ class MQTTConsumer:
         username: Optional[str] = None,
         password: Optional[str] = None,
         on_packet: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+        subscribe_topics: Optional[List[str]] = None,
+        client_id: Optional[str] = None,
     ):
         self.broker_host = broker_host
         self.broker_port = broker_port
         self.username = username
         self.password = password
         self.on_packet = on_packet
+        self.subscribe_topics = subscribe_topics
+        self.client_id = client_id or "apms-consumer-01"
         self._client = None
         self._loop = None
 
@@ -94,7 +98,7 @@ class MQTTConsumer:
             return
 
         self._loop = asyncio.get_event_loop()
-        client = mqtt.Client(client_id="apms-consumer-01", clean_session=True)
+        client = mqtt.Client(client_id=self.client_id, clean_session=True)
 
         if self.username:
             client.username_pw_set(self.username, self.password)
@@ -113,7 +117,10 @@ class MQTTConsumer:
         def on_connect(c, userdata, flags, rc):
             if rc == 0:
                 logger.info(f"MQTT connected to {self.broker_host}:{self.broker_port}")
-                c.subscribe("apms/#")
+                topics = self.subscribe_topics or ["apms/#"]
+                for topic in topics:
+                    c.subscribe(topic)
+                    logger.info(f"MQTT subscribed: {topic}")
             else:
                 logger.error(f"MQTT connection failed: rc={rc}")
 
@@ -211,15 +218,45 @@ class StreamConsumerManager:
         self._consumers = []
 
     async def startup(self, on_packet: Callable[[Dict[str, Any]], Awaitable[None]]):
-        # MQTT
+        # MQTT — env vars, or broker/topics from GET+POST /ai/query when FLEET_MQTT_FROM_QUERY=true
         mqtt_host = os.environ.get("MQTT_BROKER_HOST", "")
+        mqtt_port = int(os.environ.get("MQTT_BROKER_PORT", "1883"))
+        mqtt_user = os.environ.get("MQTT_USERNAME") or None
+        mqtt_pass = os.environ.get("MQTT_PASSWORD") or None
+        subscribe_topics: Optional[List[str]] = None
+        client_id: Optional[str] = None
+
+        try:
+            from src.services.fleet_query_service import fleet_query_service
+
+            fleet_mqtt = fleet_query_service.resolve_mqtt_env_override(
+                os.environ.get("FLEET_MQTT_MACHINE_ID") or None
+            )
+            if fleet_mqtt and fleet_mqtt.get("broker_host"):
+                mqtt_host = fleet_mqtt["broker_host"]
+                mqtt_port = int(fleet_mqtt.get("broker_port") or mqtt_port)
+                mqtt_user = fleet_mqtt.get("username") or mqtt_user
+                if fleet_mqtt.get("topics"):
+                    subscribe_topics = fleet_mqtt["topics"]
+                elif fleet_mqtt.get("subscribe_wildcard"):
+                    subscribe_topics = [fleet_mqtt["subscribe_wildcard"]]
+                client_id = fleet_mqtt.get("client_id") or client_id
+                if fleet_mqtt.get("has_password") and not mqtt_pass:
+                    logger.warning(
+                        "Fleet MQTT reports hasPassword=true but MQTT_PASSWORD env is unset"
+                    )
+        except Exception as e:
+            logger.debug(f"Fleet MQTT bootstrap skipped: {e}")
+
         if mqtt_host:
             mqtt_consumer = MQTTConsumer(
                 broker_host=mqtt_host,
-                broker_port=int(os.environ.get("MQTT_BROKER_PORT", "1883")),
-                username=os.environ.get("MQTT_USERNAME"),
-                password=os.environ.get("MQTT_PASSWORD"),
+                broker_port=mqtt_port,
+                username=mqtt_user,
+                password=mqtt_pass,
                 on_packet=on_packet,
+                subscribe_topics=subscribe_topics,
+                client_id=client_id,
             )
             await mqtt_consumer.start()
             self._consumers.append(mqtt_consumer)

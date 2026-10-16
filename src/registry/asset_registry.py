@@ -70,6 +70,11 @@ class AssetTwinRegistry:
                 return True
             return False
 
+    def resolve_fleet_machine(self, machine_id: str, tenant_hint: Optional[str] = None):
+        from src.services.fleet_machine_resolver import resolve_fleet_machine
+
+        return resolve_fleet_machine(machine_id, tenant_hint)
+
 
 # Global singleton repository
 asset_twin_registry = AssetTwinRegistry()

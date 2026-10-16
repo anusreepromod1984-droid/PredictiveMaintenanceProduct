@@ -22,7 +22,7 @@ scikit-learn>=1.2.0      # Isolation Forest (Branch C anomaly detection)
 # sqlalchemy>=2.0.0
 
 # --- Streaming Ingestion (optional - only needed if MQTT/Kafka configured) ---
-# paho-mqtt>=1.6.0        # Uncomment for MQTT Sparkplug B edge ingestion
+paho-mqtt>=1.6.0          # MQTT edge ingestion (fleet-resolved broker/topics)
 # aiokafka>=0.9.0         # Uncomment for Kafka streaming ingestion
 
 # --- Observability ---

@@ -161,5 +161,64 @@ PRELOADED_ASSETS: List[AssetDigitalTwin] = [
             "regime_detection": "load_threshold",
             "diagnostic_engines": ["iso_vibration", "weibull_rul"]
         }
-    )
+    ),
+    # Fleet PDM machine ids (dashboard / POST /ai/query) → agent twins
+    AssetDigitalTwin(
+        tenant_id="propel_industries",
+        asset_id="g-sensor-01",
+        name="Plant Compressor G-Sensor (Fleet PDM)",
+        asset_class="centrifugal_pump",
+        vertical="heavy_machinery",
+        criticality=4,
+        metadata={
+            "fleet_machine_id": "g-sensor-01",
+            "upstream_machine_id": "g-sensor-01",
+        },
+        signal_map={
+            "primary_vibration": "imuAcceleration",
+            "bearing_temp": "temperature.motor",
+            "speed_rpm": "rpm",
+            "power_load": "energyMeter.power",
+        },
+        thresholds={
+            "vibration_warning_mm_s": 4.5,
+            "vibration_danger_mm_s": 7.1,
+            "temp_warning_celsius": 75.0,
+            "temp_danger_celsius": 90.0,
+            "load_idle_threshold_pct": 10.0,
+        },
+        pipeline_config={
+            "quality_strategy": "digital_range_check",
+            "regime_detection": "load_threshold",
+            "diagnostic_engines": ["iso_vibration", "weibull_rul"],
+        },
+    ),
+    AssetDigitalTwin(
+        tenant_id="propel_industries",
+        asset_id="gbz-rx-1",
+        name="GBZ Receiver Line (Fleet PDM)",
+        asset_class="vibrating_screen",
+        vertical="heavy_machinery",
+        criticality=3,
+        metadata={
+            "fleet_machine_id": "gbz-rx-1",
+            "upstream_machine_id": "gbz-rx-1",
+        },
+        signal_map={
+            "primary_vibration": "imuAcceleration",
+            "bearing_temp": "temperature.motor",
+            "speed_rpm": "rpm",
+        },
+        thresholds={
+            "vibration_warning_mm_s": 4.5,
+            "vibration_danger_mm_s": 7.1,
+            "temp_warning_celsius": 75.0,
+            "temp_danger_celsius": 90.0,
+        },
+        pipeline_config={
+            "quality_strategy": "digital_range_check",
+            "regime_detection": "load_threshold",
+            "diagnostic_engines": ["iso_vibration"],
+        },
+    ),
 ]
