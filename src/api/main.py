@@ -223,7 +223,10 @@ app.include_router(tenants_router, prefix=api_prefix)
 app.include_router(assets_router, prefix=api_prefix)
 app.include_router(telemetry_router, prefix=api_prefix)
 app.include_router(diagnostics_router, prefix=api_prefix)
-app.include_router(simulation_router, prefix=api_prefix)
+if settings.ENABLE_SIMULATION_ROUTES:
+    app.include_router(simulation_router, prefix=api_prefix)
+else:
+    logger.info("Simulation routes disabled (ENABLE_SIMULATION_ROUTES=false)")
 app.include_router(analytics_router, prefix=api_prefix)
 app.include_router(settings_router, prefix=api_prefix)
 app.include_router(fleet_router, prefix=api_prefix)

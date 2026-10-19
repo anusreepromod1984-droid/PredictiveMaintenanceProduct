@@ -8,7 +8,7 @@ def test_resolve_by_asset_id():
     r = resolve_fleet_machine("g-sensor-01")
     assert r is not None
     tenant_id, asset_id, twin, _tp = r
-    assert tenant_id == "propel_industries"
+    assert tenant_id == "greenbotz_platform"
     assert asset_id == "g-sensor-01"
     assert twin.metadata.get("fleet_machine_id") == "g-sensor-01"
 

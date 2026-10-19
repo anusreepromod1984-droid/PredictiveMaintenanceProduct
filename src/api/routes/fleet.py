@@ -9,7 +9,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from src.middleware.auth import assert_tenant_access, get_current_principal
 from src.services.fleet_history_ingest import sync_history_from_fleet_api
-from src.services.fleet_machine_resolver import resolve_fleet_machine
+from src.services.fleet_machine_resolver import (
+    list_registered_fleet_machine_ids,
+    resolve_fleet_machine,
+)
 from src.services.fleet_query_service import (
     fleet_query_service,
     DEFAULT_SNAPSHOT_INCLUDES,
@@ -26,32 +29,74 @@ def _require_fleet():
         )
 
 
+def _principal_tenant_scope(principal: Dict[str, Any]) -> Optional[str]:
+    t = principal.get("tenant_id")
+    if t and t != "*":
+        return str(t).lower()
+    return None
+
+
 def _assert_machine_access(principal: Dict[str, Any], machine_id: str, tenant_hint: Optional[str] = None):
     resolved = resolve_fleet_machine(machine_id, tenant_hint)
     if not resolved:
-        if principal.get("tenant_id") == "*":
+        scope = _principal_tenant_scope(principal)
+        if scope and machine_id.strip().lower() in list_registered_fleet_machine_ids(scope):
+            assert_tenant_access(principal, scope)
             return
-        raise HTTPException(status_code=404, detail=f"No agent twin mapped for machine '{machine_id}'")
+        if principal.get("tenant_id") == "*":
+            raise HTTPException(status_code=404, detail=f"No agent twin mapped for machine '{machine_id}'")
+        raise HTTPException(
+            status_code=404,
+            detail=f"No agent twin mapped for machine '{machine_id}' (provide tenant_id if ambiguous)",
+        )
     tenant_id, _asset_id, _twin, _tp = resolved
     assert_tenant_access(principal, tenant_id)
 
 
 @router.get("/capabilities")
-def fleet_capabilities(principal: Dict[str, Any] = Depends(get_current_principal)):
-    """GET /ai/query/capabilities — allowed includes, limits, visible machines."""
+def fleet_capabilities(
+    tenant_id: Optional[str] = Query(default=None),
+    principal: Dict[str, Any] = Depends(get_current_principal),
+):
+    """GET /ai/query/capabilities — filtered to tenant-registered machines in production."""
     _require_fleet()
     caps = fleet_query_service.get_capabilities()
     if not caps:
         raise HTTPException(status_code=502, detail="Upstream capabilities request failed")
+
+    scope = tenant_id or _principal_tenant_scope(principal)
+    if scope:
+        assert_tenant_access(principal, scope)
+        allowed = set(list_registered_fleet_machine_ids(scope))
+        machines = caps.get("machines") or []
+        if isinstance(machines, list):
+            filtered = []
+            for item in machines:
+                if isinstance(item, str) and item.lower() in allowed:
+                    filtered.append(item)
+                elif isinstance(item, dict):
+                    mid = str(item.get("machineId") or "").lower()
+                    if mid in allowed:
+                        filtered.append(item)
+            caps = {**caps, "machines": filtered}
     return caps
 
 
 @router.get("/machines")
-def fleet_visible_machines(principal: Dict[str, Any] = Depends(get_current_principal)):
+def fleet_visible_machines(
+    tenant_id: Optional[str] = Query(default=None),
+    principal: Dict[str, Any] = Depends(get_current_principal),
+):
     _require_fleet()
-    return {
-        "machine_ids": fleet_query_service.list_visible_machine_ids(),
-    }
+    scope = tenant_id or _principal_tenant_scope(principal)
+    if scope:
+        assert_tenant_access(principal, scope)
+        return {"machine_ids": list_registered_fleet_machine_ids(scope)}
+
+    if principal.get("tenant_id") != "*":
+        raise HTTPException(status_code=400, detail="tenant_id required")
+    upstream = fleet_query_service.list_visible_machine_ids()
+    return {"machine_ids": upstream}
 
 
 @router.get("/machines/{machine_id}/resolve")

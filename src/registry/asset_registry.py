@@ -46,8 +46,21 @@ class AssetTwinRegistry:
 
     # Asset CRUD
     def register_asset(self, asset: AssetDigitalTwin) -> AssetDigitalTwin:
+        from src.services.fleet_machine_resolver import fleet_machine_id_from_metadata
+
         key = make_tenant_key(asset.tenant_id, asset.asset_id)
+        fid = fleet_machine_id_from_metadata(asset.metadata or {})
         with self._lock:
+            if fid:
+                for existing in self._assets.values():
+                    if existing.tenant_id.lower() == asset.tenant_id.lower() and existing.asset_id.lower() == asset.asset_id.lower():
+                        continue
+                    other_fid = fleet_machine_id_from_metadata(existing.metadata or {})
+                    if other_fid == fid:
+                        raise ValueError(
+                            f"fleet_machine_id '{fid}' already registered for tenant "
+                            f"{existing.tenant_id} asset {existing.asset_id}"
+                        )
             self._assets[key] = asset
             logger.info(f"Registered asset twin: {key} ({asset.name})")
             return asset

@@ -111,7 +111,16 @@ def get_current_principal(
         from src.config import settings
         # Internal platform service key (e.g. Next.js dashboard server-side proxy)
         if settings.AI_SERVICE_API_KEY and hmac.compare_digest(clean_key, settings.AI_SERVICE_API_KEY.strip()):
-            tenant_claim = request.headers.get("X-Tenant-Id") or request.query_params.get("tenant_id") or "*"
+            tenant_claim = request.headers.get("X-Tenant-Id") or request.query_params.get("tenant_id")
+            prod = (settings.ENVIRONMENT or "").lower() == "production" and not settings.AUTH_DISABLED
+            if prod and not tenant_claim:
+                raise HTTPException(
+                    status_code=401,
+                    detail="X-Tenant-Id (or tenant_id query) required with service API key in production",
+                )
+            if prod and str(tenant_claim).strip() == "*":
+                raise HTTPException(status_code=403, detail="Wildcard tenant not allowed in production")
+            tenant_claim = tenant_claim or "*"
             logger.debug(f"Service Key auth OK for tenant={tenant_claim}")
             return {"sub": "internal_service", "tenant_id": tenant_claim, "roles": ["ingest", "read", "admin"]}
 
@@ -130,8 +139,16 @@ def get_current_principal(
     # 3. No credentials – production rejects; dev mode or automated tests allow anonymous
     import os
     from src.config import settings
-    if settings.AUTH_DISABLED or os.environ.get("PYTEST_CURRENT_TEST"):
+    if settings.AUTH_DISABLED or os.environ.get("APMS_AUTH_DISABLED", "").lower() in ("1", "true", "yes"):
         return {"sub": "anonymous", "tenant_id": "*", "roles": ["ingest", "read", "admin"]}
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return {"sub": "anonymous", "tenant_id": "*", "roles": ["ingest", "read", "admin"]}
+    if (settings.ENVIRONMENT or "").lower() != "production" and request.client and request.client.host in (
+        "127.0.0.1",
+        "localhost",
+        "testclient",
+    ):
+        return {"sub": "anonymous_dev", "tenant_id": "*", "roles": ["ingest", "read", "admin"]}
 
     raise HTTPException(
         status_code=401,

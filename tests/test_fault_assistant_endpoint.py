@@ -42,7 +42,7 @@ def test_fault_assistant_overrides_nominal_diagnostic_when_breach_present():
         "prescriptive_action": {},
         "prognostics": {"rul_days": 180.0},
     }
-    platform_buffer.save_diagnostic("greenbotz", "G-Sensor-01", nominal_diag)
+    platform_buffer.save_diagnostic("greenbotz_platform", "g-sensor-01", nominal_diag)
 
     # Calling with active alert breach
     payload = {
@@ -81,7 +81,7 @@ def test_fault_assistant_provides_repair_options_for_vibration_exceeded_diag():
         "prescriptive_action": {},
         "prognostics": None,
     }
-    platform_buffer.save_diagnostic("greenbotz", "G-Sensor-01", exceeded_diag)
+    platform_buffer.save_diagnostic("greenbotz_platform", "g-sensor-01", exceeded_diag)
 
     resp = client.post("/api/v1/machines/G-Sensor-01/fault-assistant", json={})
     assert resp.status_code == 200

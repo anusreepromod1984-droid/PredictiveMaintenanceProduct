@@ -6,16 +6,14 @@ diagnostic history traces, and work order tracking.
 """
 
 import time
-import math
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, Query, Security
+from fastapi import APIRouter, HTTPException, Query, Security
 
-from src.config import settings
 from src.utils.logger import get_logger
 from src.db.historian import platform_historian
-from src.services.fleet_machine_resolver import resolve_fleet_machine
-from src.middleware.auth import get_current_principal, assert_tenant_access
+from src.middleware.auth import get_current_principal
+from src.api.tenant_scope import resolve_machine_asset
 
 logger = get_logger("API.Predict")
 router = APIRouter(tags=["Prognostics & RUL History"])
@@ -27,24 +25,13 @@ router = APIRouter(tags=["Prognostics & RUL History"])
 )
 def get_rul_history(
     machine_id: str,
+    tenant_id: Optional[str] = Query(default=None),
     principal: Dict[str, Any] = Security(get_current_principal),
 ) -> Dict[str, Any]:
-    """
-    Returns time-series RUL degradation points, diagnostic markers, PM tasks,
-    and recommended repair windows for a given machine.
-    """
-    resolved = resolve_fleet_machine(machine_id)
-    if resolved:
-        tenant_id, asset_id, twin, tp = resolved
-    else:
-        tenant_id = principal.get("tenant_id") if principal.get("tenant_id") != "*" else "propel_industries"
-        asset_id = machine_id.lower()
+    tenant_id, asset_id = resolve_machine_asset(machine_id, tenant_id, principal)
 
-    assert_tenant_access(principal, tenant_id)
-
-    # 1. Fetch real historical diagnostic records from the persistent historian
     records = platform_historian.get_diagnostic_history(tenant_id, asset_id, limit=60)
-    
+
     points: List[Dict[str, Any]] = []
     latest_rul_days = 169.0
     latest_defect = "NORMAL"
@@ -54,7 +41,7 @@ def get_rul_history(
         if not ts:
             continue
         ts_ms = int(ts * 1000) if ts < 1e11 else int(ts)
-        
+
         prognostics = r.get("prognostics") or {}
         rul = prognostics.get("rul_days") or prognostics.get("remaining_useful_life_days")
         if rul is not None:
@@ -72,7 +59,6 @@ def get_rul_history(
 
     now_ms = int(time.time() * 1000)
 
-    # 2. If points are sparse (< 2 points, e.g. cold start), synthesize a standard baseline degradation series
     if len(points) < 2:
         points = []
         for i in range(25, -1, -1):
@@ -98,16 +84,18 @@ def get_rul_history(
 
     pm_tasks = [
         {
-          "id": "pm-001",
-          "name": "Walkdown inspection & sensor mounting torque check (3.5 Nm)",
-          "due_at": datetime.fromtimestamp((now_ms + 86400000) / 1000, tz=timezone.utc).strftime("%Y-%m-%d"),
-          "due_in_days": 1,
-          "overdue": False,
+            "id": "pm-001",
+            "name": "Walkdown inspection & sensor mounting torque check (3.5 Nm)",
+            "due_at": datetime.fromtimestamp((now_ms + 86400000) / 1000, tz=timezone.utc).strftime("%Y-%m-%d"),
+            "due_in_days": 1,
+            "overdue": False,
         }
     ]
 
     return {
         "machine_id": machine_id,
+        "tenant_id": tenant_id,
+        "asset_id": asset_id,
         "points": points,
         "markers": markers,
         "pm_tasks": pm_tasks,
@@ -141,16 +129,9 @@ def _format_history_row(diag: Dict[str, Any]) -> Dict[str, Any]:
 def get_diagnosis_history(
     machine_id: str,
     limit: int = Query(default=20, ge=1, le=100),
+    tenant_id: Optional[str] = Query(default=None),
     principal: Dict[str, Any] = Security(get_current_principal),
 ) -> List[Dict[str, Any]]:
-    """Returns recent diagnosis runs and trace records for the specified asset."""
-    resolved = resolve_fleet_machine(machine_id)
-    if resolved:
-        tenant_id, asset_id, _, _ = resolved
-    else:
-        tenant_id = principal.get("tenant_id") if principal.get("tenant_id") != "*" else "propel_industries"
-        asset_id = machine_id.lower()
-
-    assert_tenant_access(principal, tenant_id)
+    tenant_id, asset_id = resolve_machine_asset(machine_id, tenant_id, principal)
     rows = platform_historian.get_diagnostic_history(tenant_id, asset_id, limit=limit)
     return [_format_history_row(r) for r in rows if isinstance(r, dict)]

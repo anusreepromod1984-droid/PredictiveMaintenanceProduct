@@ -25,7 +25,10 @@ def create_or_update_asset(
     assert_tenant_access(principal, tenant_id)
     if asset.tenant_id.lower() != tenant_id.lower():
         raise HTTPException(status_code=400, detail="Tenant ID in payload does not match route parameter")
-    return asset_twin_registry.register_asset(asset)
+    try:
+        return asset_twin_registry.register_asset(asset)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
 
 @router.get("/{asset_id}", response_model=AssetDigitalTwin)

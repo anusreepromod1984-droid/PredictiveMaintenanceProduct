@@ -2,16 +2,16 @@
 Production Analytics & Historian Query Routes
 ==============================================
 Provides time-series queries, KPI trend analysis, and SBM model status.
-These endpoints are what a Grafana datasource plugin or enterprise portal would call.
 """
 
-from fastapi import APIRouter, HTTPException, Query, Depends
-from typing import Optional
+from fastapi import APIRouter, HTTPException, Query, Security
+from typing import Optional, Dict, Any
 
 from src.db.historian import platform_historian
 from src.engines.sbm_engine import sbm_registry
 from src.registry.asset_registry import asset_twin_registry
 from src.utils.metrics import platform_metrics
+from src.middleware.auth import get_current_principal, assert_tenant_access, require_role
 
 router = APIRouter(tags=["Production Analytics"])
 
@@ -22,12 +22,9 @@ def get_historical_telemetry(
     asset_id: str,
     limit: int = Query(default=200, le=5000),
     since_epoch: Optional[float] = None,
+    principal: Dict[str, Any] = Security(get_current_principal),
 ):
-    """
-    Query the persistent historian for telemetry time-series.
-    Returns up to `limit` rows, optionally filtered by `since_epoch`.
-    For longer windows, use the Cold Tier (Parquet/Iceberg) via the analytics job.
-    """
+    assert_tenant_access(principal, tenant_id)
     twin = asset_twin_registry.get_asset(tenant_id, asset_id)
     if not twin:
         raise HTTPException(status_code=404, detail=f"Asset '{asset_id}' not found for tenant '{tenant_id}'")
@@ -47,11 +44,9 @@ def get_diagnostic_history(
     asset_id: str,
     limit: int = Query(default=100, le=2000),
     since_epoch: Optional[float] = None,
+    principal: Dict[str, Any] = Security(get_current_principal),
 ):
-    """
-    Returns full diagnostic result history (health score, faults, RUL, SBM) from the historian.
-    Use this to power health-trend charts in the enterprise portal.
-    """
+    assert_tenant_access(principal, tenant_id)
     twin = asset_twin_registry.get_asset(tenant_id, asset_id)
     if not twin:
         raise HTTPException(status_code=404, detail=f"Asset '{asset_id}' not found for tenant '{tenant_id}'")
@@ -69,11 +64,9 @@ def get_asset_kpi_summary(
     tenant_id: str,
     asset_id: str,
     days: int = Query(default=30, le=365),
+    principal: Dict[str, Any] = Security(get_current_principal),
 ):
-    """
-    Daily KPI rollup: min/max/avg health score, fault count, critical count.
-    Use this for executive dashboard health trend sparklines.
-    """
+    assert_tenant_access(principal, tenant_id)
     twin = asset_twin_registry.get_asset(tenant_id, asset_id)
     if not twin:
         raise HTTPException(status_code=404, detail=f"Asset '{asset_id}' not found for tenant '{tenant_id}'")
@@ -88,11 +81,12 @@ def get_asset_kpi_summary(
 
 
 @router.get("/tenants/{tenant_id}/assets/{asset_id}/sbm/status")
-def get_sbm_status(tenant_id: str, asset_id: str):
-    """
-    Returns the current Similarity-Based Model status:
-    training progress, anomaly index, CUSUM alarm state per signal.
-    """
+def get_sbm_status(
+    tenant_id: str,
+    asset_id: str,
+    principal: Dict[str, Any] = Security(get_current_principal),
+):
+    assert_tenant_access(principal, tenant_id)
     model = sbm_registry.get(tenant_id, asset_id)
     if not model:
         return {
@@ -120,16 +114,17 @@ def get_sbm_status(tenant_id: str, asset_id: str):
 
 
 @router.post("/tenants/{tenant_id}/assets/{asset_id}/sbm/reset-cusum")
-def reset_sbm_cusum(tenant_id: str, asset_id: str):
-    """
-    Resets SBM CUSUM state after a maintenance intervention.
-    Call this after work order completion to suppress residual post-maintenance alarms.
-    """
+def reset_sbm_cusum(
+    tenant_id: str,
+    asset_id: str,
+    principal: Dict[str, Any] = Security(require_role("admin")),
+):
+    assert_tenant_access(principal, tenant_id)
     sbm_registry.reset_cusum(tenant_id, asset_id)
     return {"status": "ok", "message": f"CUSUM state reset for {tenant_id}::{asset_id}"}
 
 
 @router.get("/platform/metrics/summary")
-def platform_metrics_summary():
+def platform_metrics_summary(principal: Dict[str, Any] = Security(require_role("admin"))):
     """JSON summary of platform operational metrics (alternative to Prometheus /metrics)."""
     return platform_metrics.get_summary()

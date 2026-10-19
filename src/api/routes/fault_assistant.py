@@ -10,42 +10,26 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query, Request, Security
 
 from src.core.buffer import platform_buffer
-from src.core.context import parse_tenant_key
 from src.db.historian import platform_historian
 from src.services.fleet_live_diagnosis import try_fleet_live_diagnosis
-from src.services.fleet_machine_resolver import resolve_fleet_machine
-from src.middleware.auth import get_current_principal, assert_tenant_access
+from src.middleware.auth import get_current_principal
+from src.api.tenant_scope import resolve_machine_asset
 
 router = APIRouter(prefix="/api/v1", tags=["Dashboard card"])
 
 
-def _find(machine_id: str, tenant_id: Optional[str]) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
-    wanted = machine_id.strip().lower()
-    # 1. First check hot in-memory cache for exact tenant or any tenant matching asset
-    with platform_buffer._lock:
-        if tenant_id:
-            key = make_tenant_key(tenant_id, machine_id)
-            if key in platform_buffer._latest_diagnostics:
-                return tenant_id, platform_buffer._latest_diagnostics[key]
-        for key, diag in platform_buffer._latest_diagnostics.items():
-            t, a = parse_tenant_key(key)
-            if a.lower() == wanted:
-                return t, diag
-
-    # 2. Fall back to resolved tenant (including historian)
-    resolved = resolve_fleet_machine(machine_id, tenant_id)
-    if resolved:
-        t_id, a_id, _twin, _tp = resolved
-        diag = platform_buffer.get_latest_diagnostic(t_id, a_id)
-        if diag:
-            return t_id, diag
-
-    if tenant_id:
-        diag = platform_buffer.get_latest_diagnostic(tenant_id, machine_id)
-        if diag:
-            return tenant_id, diag
-
-    return None, None
+def _find(
+    machine_id: str,
+    tenant_id: Optional[str],
+    principal: Dict[str, Any],
+) -> tuple[Optional[str], Optional[str], Optional[Dict[str, Any]]]:
+    """Returns (tenant_id, asset_id, diagnostic) without cross-tenant scans."""
+    try:
+        t_id, a_id = resolve_machine_asset(machine_id, tenant_id, principal)
+    except HTTPException:
+        return None, None, None
+    diag = platform_buffer.get_latest_diagnostic(t_id, a_id)
+    return t_id, a_id, diag
 
 
 def _severity(health: str, fault_severity: str) -> str:
@@ -290,11 +274,10 @@ async def fault_assistant(
     tenant_id: Optional[str] = Query(default=None),
     principal: Dict[str, Any] = Security(get_current_principal),
 ):
-    resolved = resolve_fleet_machine(machine_id, tenant_id)
-    if resolved:
-        assert_tenant_access(principal, resolved[0])
-    elif tenant_id:
-        assert_tenant_access(principal, tenant_id)
+    try:
+        resolve_machine_asset(machine_id, tenant_id, principal)
+    except HTTPException:
+        raise
 
     body: Dict[str, Any] = {}
     try:
@@ -306,6 +289,19 @@ async def fault_assistant(
 
     breaches = [b for b in (body.get("breaches") or []) if isinstance(b, dict)]
     telemetry = body.get("telemetry") if isinstance(body.get("telemetry"), dict) else {}
+    force_live = bool(body.get("force_live")) or request.query_params.get("live") == "true"
+
+    _tenant_scoped, _asset_scoped, cached_diag = _find(machine_id, tenant_id, principal)
+
+    if cached_diag and not force_live:
+        res = to_frontend_diagnosis(machine_id, cached_diag)
+        if breaches and (
+            res.get("severity") != "critical"
+            or "NORMAL" in str(res.get("archetype"))
+            or "STANDBY" in str(res.get("archetype"))
+        ):
+            return _synthesize_breach_diagnosis(machine_id, breaches, telemetry)
+        return res
 
     fleet_result, fleet_alerts, _fleet_block = try_fleet_live_diagnosis(machine_id, tenant_id)
     if fleet_alerts and not breaches:
@@ -333,7 +329,7 @@ async def fault_assistant(
                     "threshold": f"outside {band[0]:g}–{band[1]:g}"
                 })
 
-    tenant, diag = _find(machine_id, tenant_id)
+    diag = cached_diag
     if not diag:
         if breaches or telemetry:
             return _synthesize_breach_diagnosis(machine_id, breaches, telemetry)
@@ -356,14 +352,8 @@ def diagnosis_history(
     tenant_id: Optional[str] = Query(default=None),
     principal: Dict[str, Any] = Security(get_current_principal),
 ):
-    resolved = resolve_fleet_machine(machine_id, tenant_id)
-    if resolved:
-        assert_tenant_access(principal, resolved[0])
-    elif tenant_id:
-        assert_tenant_access(principal, tenant_id)
-
-    tenant, _diag = _find(machine_id, tenant_id)
+    tenant, asset_id, _diag = _find(machine_id, tenant_id, principal)
     if not tenant:
         return []
-    rows = platform_historian.get_diagnostic_history(tenant, machine_id, limit=limit)
+    rows = platform_historian.get_diagnostic_history(tenant, asset_id, limit=limit)
     return [_history_row(row) for row in rows if isinstance(row, dict)]

@@ -15,7 +15,7 @@ client = TestClient(app)
 def test_predict_rul_history_nominal():
     # Seed a diagnostic record into historian for G-Sensor-01
     platform_historian.persist_diagnostic(
-        tenant_id="propel_industries",
+        tenant_id="greenbotz_platform",
         asset_id="g-sensor-01",
         result={
             "trace_id": "test_trace_rul_001",
@@ -54,7 +54,7 @@ def test_predict_history_records():
         }
     )
 
-    resp = client.get("/api/v1/predict/history/gbz-rx-1?limit=10")
+    resp = client.get("/api/v1/predict/history/gbz-rx-1?limit=10&tenant_id=propel_industries")
     assert resp.status_code == 200
     records = resp.json()
     assert isinstance(records, list)

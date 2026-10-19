@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     # Observability
     # -----------------------------------------------------------------------
     ENABLE_METRICS_ENDPOINT: bool = os.environ.get("ENABLE_METRICS", "true").lower() in ("1", "true", "yes")
+    ENABLE_SIMULATION_ROUTES: bool = os.environ.get(
+        "ENABLE_SIMULATION_ROUTES",
+        "true" if os.environ.get("ENVIRONMENT", "production") != "production" else "false",
+    ).lower() in ("1", "true", "yes")
 
     # -----------------------------------------------------------------------
     # Upstream Fleet / PDM AI Query API (Dynamic Thresholds & Metadata)
