@@ -35,6 +35,7 @@ from src.api.routes.settings import router as settings_router
 from src.api.routes.fleet import router as fleet_router
 from src.api.routes.predict import router as predict_router
 from src.api.routes.alerts import router as alerts_router
+from src.api.routes.reports import router as reports_router
 
 logger = get_logger("API.Main")
 
@@ -232,6 +233,7 @@ app.include_router(settings_router, prefix=api_prefix)
 app.include_router(fleet_router, prefix=api_prefix)
 app.include_router(predict_router, prefix=api_prefix)
 app.include_router(alerts_router, prefix=api_prefix)
+app.include_router(reports_router, prefix=api_prefix)
 # Routes already include /api/v1 — same paths the UI server proxies to.
 app.include_router(fault_assistant_router)
 

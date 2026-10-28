@@ -14,6 +14,7 @@ from src.db.historian import platform_historian
 from src.services.fleet_live_diagnosis import try_fleet_live_diagnosis
 from src.middleware.auth import get_current_principal
 from src.api.tenant_scope import resolve_machine_asset
+from src.services.report_summary_store import get_latest_for_asset, get_latest_for_machine
 
 router = APIRouter(prefix="/api/v1", tags=["Dashboard card"])
 
@@ -250,6 +251,25 @@ def to_frontend_diagnosis(machine_id: str, diag: Dict[str, Any]) -> Dict[str, An
     }
 
 
+def _attach_report_summary(
+    payload: Dict[str, Any],
+    tenant_id: str,
+    asset_id: str,
+    machine_id: str,
+) -> Dict[str, Any]:
+    rec = get_latest_for_machine(tenant_id, machine_id) or get_latest_for_asset(tenant_id, asset_id)
+    if rec:
+        payload["reportSummary"] = {
+            "summary": rec.get("summary"),
+            "findings": rec.get("findings") or [],
+            "title": rec.get("title"),
+            "reportType": rec.get("reportType"),
+            "generatedAt": rec.get("generatedAt"),
+            "graph": rec.get("graph") or {},
+        }
+    return payload
+
+
 def _history_row(diag: Dict[str, Any]) -> Dict[str, Any]:
     faults = [f for f in (diag.get("active_faults") or []) if isinstance(f, dict)]
     first = faults[0] if faults else {}
@@ -275,7 +295,7 @@ async def fault_assistant(
     principal: Dict[str, Any] = Security(get_current_principal),
 ):
     try:
-        resolve_machine_asset(machine_id, tenant_id, principal)
+        scoped_tenant, scoped_asset = resolve_machine_asset(machine_id, tenant_id, principal)
     except HTTPException:
         raise
 
@@ -300,8 +320,13 @@ async def fault_assistant(
             or "NORMAL" in str(res.get("archetype"))
             or "STANDBY" in str(res.get("archetype"))
         ):
-            return _synthesize_breach_diagnosis(machine_id, breaches, telemetry)
-        return res
+            return _attach_report_summary(
+                _synthesize_breach_diagnosis(machine_id, breaches, telemetry),
+                scoped_tenant,
+                scoped_asset,
+                machine_id,
+            )
+        return _attach_report_summary(res, scoped_tenant, scoped_asset, machine_id)
 
     fleet_result, fleet_alerts, _fleet_block = try_fleet_live_diagnosis(machine_id, tenant_id)
     if fleet_alerts and not breaches:
@@ -313,8 +338,13 @@ async def fault_assistant(
             or "NORMAL" in str(res.get("archetype"))
             or "STANDBY" in str(res.get("archetype"))
         ):
-            return _synthesize_breach_diagnosis(machine_id, breaches, telemetry)
-        return res
+            return _attach_report_summary(
+                _synthesize_breach_diagnosis(machine_id, breaches, telemetry),
+                scoped_tenant,
+                scoped_asset,
+                machine_id,
+            )
+        return _attach_report_summary(res, scoped_tenant, scoped_asset, machine_id)
 
     # Check if telemetry has vibration exceeding API limits even if breaches list is empty
     if not breaches and telemetry:
@@ -332,7 +362,12 @@ async def fault_assistant(
     diag = cached_diag
     if not diag:
         if breaches or telemetry:
-            return _synthesize_breach_diagnosis(machine_id, breaches, telemetry)
+            return _attach_report_summary(
+                _synthesize_breach_diagnosis(machine_id, breaches, telemetry),
+                scoped_tenant,
+                scoped_asset,
+                machine_id,
+            )
         raise HTTPException(status_code=404, detail=f"No diagnostic run for {machine_id}")
 
     res = to_frontend_diagnosis(machine_id, diag)
@@ -340,9 +375,9 @@ async def fault_assistant(
     # If active alert breaches are present, force elevation to Critical
     if breaches and (res.get("severity") != "critical" or "NORMAL" in str(res.get("archetype")) or "STANDBY" in str(res.get("archetype"))):
         synth = _synthesize_breach_diagnosis(machine_id, breaches, telemetry)
-        return synth
+        return _attach_report_summary(synth, scoped_tenant, scoped_asset, machine_id)
 
-    return res
+    return _attach_report_summary(res, scoped_tenant, scoped_asset, machine_id)
 
 
 @router.get("/predict/history/{machine_id}")
