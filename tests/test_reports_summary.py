@@ -40,6 +40,38 @@ def test_post_reports_summary(monkeypatch):
     data = resp.json()
     assert data["summary"] == "Test plant report narrative."
     assert "g-sensor-01" in data["findings"][0]
+    assert "graph" not in data
+
+
+def test_post_reports_summary_platform_webhook_without_tenant_id(monkeypatch):
+    captured: dict = {}
+
+    def _fake(**kwargs):
+        captured.update(kwargs)
+        return {
+            "summary": "Platform webhook summary.",
+            "findings": ["ok"],
+            "graph": {"kind": "agent_insight"},
+        }
+
+    monkeypatch.setattr(reports_route, "generate_report_summary", _fake)
+
+    payload = {
+        "companySlug": "greenbotz-platform-pvt-ltd",
+        "reportType": "FLEET_SUMMARY",
+        "title": "Fleet summary — 1 machines",
+        "machineIds": ["G-Sensor-01"],
+        "from": "2026-10-22T06:56:20.212Z",
+        "to": "2026-10-29T06:56:20.212Z",
+        "timezone": "Asia/Calcutta",
+        "fields": None,
+        "kpis": [{"label": "Alerts", "value": "7706"}],
+    }
+    resp = client.post("/api/v1/reports/summary", json=payload)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["summary"] == "Platform webhook summary."
+    assert captured["tenant_id"] == "greenbotz_platform"
+    assert captured["date_range"]["start"] == payload["from"]
 
 
 def test_fault_assistant_includes_report_summary():

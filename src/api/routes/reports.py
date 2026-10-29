@@ -4,10 +4,13 @@ Plant Reports — AI summary integration (service-reports → APMS → upstream 
 
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Security
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from src.config import settings
 
 from src.middleware.auth import get_current_principal, assert_tenant_access
 from src.services.fleet_machine_resolver import resolve_fleet_machine
@@ -29,33 +32,81 @@ class KpiModel(BaseModel):
 
 class ReportSummaryRequest(BaseModel):
     company: Optional[str] = None
+    company_slug: Optional[str] = Field(default=None, alias="companySlug")
     report_type: Optional[str] = Field(default=None, alias="reportType")
     title: Optional[str] = None
     machine_ids: List[str] = Field(default_factory=list, alias="machineIds")
     date_range: Optional[Dict[str, Any]] = Field(default=None, alias="dateRange")
+    period_from: Optional[str] = Field(default=None, alias="from")
+    period_to: Optional[str] = Field(default=None, alias="to")
     timezone: Optional[str] = None
     selected_parameters: Optional[List[str]] = Field(default=None, alias="selectedParameters")
+    fields: Optional[List[str]] = None
     kpis: Optional[List[KpiModel]] = None
     tenant_id: Optional[str] = Field(default=None, alias="tenantId")
 
     model_config = {"populate_by_name": True}
 
+    @model_validator(mode="after")
+    def normalize_platform_webhook(self) -> "ReportSummaryRequest":
+        date_range = self.date_range
+        if date_range is None and (self.period_from or self.period_to):
+            date_range = {"start": self.period_from, "end": self.period_to}
+        selected = self.selected_parameters if self.selected_parameters is not None else self.fields
+        company = self.company or self.company_slug
+        return self.model_copy(
+            update={
+                "company": company,
+                "date_range": date_range,
+                "selected_parameters": selected,
+            }
+        )
+
 
 class ReportSummaryResponse(BaseModel):
+    """Matches service-reports AiSummaryResponse (summary + findings only)."""
+
     summary: str
     findings: List[str]
-    graph: Dict[str, Any] = Field(default_factory=dict)
+
+
+_DEFAULT_SLUG_TENANT: Dict[str, str] = {
+    "greenbotz-platform-pvt-ltd": "greenbotz_platform",
+    "propel-industries-pvt-ltd": "propel_industries",
+}
+
+
+def _slug_tenant_map() -> Dict[str, str]:
+    merged = dict(_DEFAULT_SLUG_TENANT)
+    raw = (getattr(settings, "COMPANY_SLUG_TENANT_MAP", None) or "").strip()
+    if raw:
+        try:
+            extra = json.loads(raw)
+            if isinstance(extra, dict):
+                merged.update({str(k).lower(): str(v).lower() for k, v in extra.items()})
+        except json.JSONDecodeError:
+            logger.warning("COMPANY_SLUG_TENANT_MAP is not valid JSON; using defaults only")
+    return merged
+
+
+def _tenant_from_company_slug(slug: Optional[str]) -> Optional[str]:
+    if not slug or not str(slug).strip():
+        return None
+    return _slug_tenant_map().get(str(slug).strip().lower())
 
 
 def _resolve_tenant(req: ReportSummaryRequest, principal: Dict[str, Any]) -> str:
-    tenant = (
-        req.tenant_id
-        or principal.get("tenant_id")
-    )
+    tenant = req.tenant_id or _tenant_from_company_slug(req.company_slug)
+    if not tenant or tenant == "*":
+        principal_tenant = principal.get("tenant_id")
+        if principal_tenant and principal_tenant != "*":
+            tenant = principal_tenant
     if not tenant or tenant == "*":
         raise HTTPException(
             status_code=400,
-            detail="tenantId (body), X-Tenant-Id header, or JWT tenant_id is required",
+            detail=(
+                "tenantId (body), X-Tenant-Id header, companySlug mapping, or JWT tenant_id is required"
+            ),
         )
     assert_tenant_access(principal, tenant)
     return str(tenant).lower()
@@ -135,5 +186,4 @@ def create_report_summary(
     return ReportSummaryResponse(
         summary=result["summary"],
         findings=result["findings"],
-        graph=result.get("graph") or {},
     )

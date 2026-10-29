@@ -88,6 +88,8 @@ class Settings(BaseSettings):
     AI_SERVICE_BASE_URL: str = os.environ.get("AI_SERVICE_BASE_URL", "http://168.144.37.186:4000")
     AI_SERVICE_API_KEY: str = os.environ.get("AI_SERVICE_API_KEY", "")
     AI_SERVICE_TIMEOUT_S: float = float(os.environ.get("AI_SERVICE_TIMEOUT_S", "5.0"))
+    # JSON object: PDM companySlug -> APMS tenant_id (merged with built-in defaults in reports route)
+    COMPANY_SLUG_TENANT_MAP: str = os.environ.get("COMPANY_SLUG_TENANT_MAP", "")
     FLEET_MQTT_FROM_QUERY: bool = os.environ.get("FLEET_MQTT_FROM_QUERY", "false").lower() in (
         "1",
         "true",
