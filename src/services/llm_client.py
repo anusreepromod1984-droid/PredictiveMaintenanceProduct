@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 
@@ -14,6 +14,8 @@ from src.config import settings
 from src.utils.logger import get_logger
 
 logger = get_logger("Services.LLMClient")
+
+_DEFAULT_GROQ_BASE = "https://api.groq.com/openai/v1"
 
 
 def extract_json_object(text: str) -> Dict[str, Any]:
@@ -33,6 +35,25 @@ def extract_json_object(text: str) -> Dict[str, Any]:
     return parsed
 
 
+def _resolve_chat_completions_url() -> str:
+    base = (settings.REPORT_LLM_BASE_URL or _DEFAULT_GROQ_BASE).strip().rstrip("/")
+    if base.endswith("/chat/completions"):
+        return base
+    return f"{base}/chat/completions"
+
+
+def _model_candidates() -> List[str]:
+    primary = (settings.REPORT_LLM_MODEL or "openai/gpt-oss-120b").strip()
+    out: List[str] = [primary] if primary else []
+    raw = (getattr(settings, "REPORT_LLM_FALLBACK_MODELS", None) or "").strip()
+    if raw:
+        for part in raw.split(","):
+            m = part.strip()
+            if m and m not in out:
+                out.append(m)
+    return out
+
+
 def chat_completions_text(
     *,
     system_prompt: str,
@@ -44,36 +65,75 @@ def chat_completions_text(
     api_key = settings.report_llm_api_key()
     if not api_key:
         raise ValueError("LLM API key not configured (set GROQ_API_KEY)")
-    base = (settings.REPORT_LLM_BASE_URL or "https://api.groq.com/openai/v1").rstrip("/")
-    model = settings.REPORT_LLM_MODEL or "llama-3.3-70b-versatile"
-    url = f"{base}/chat/completions"
-    payload: Dict[str, Any] = {
-        "model": model,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content},
-        ],
-        "response_format": {"type": "json_object"},
-    }
+
+    url = _resolve_chat_completions_url()
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
     timeout = float(timeout_s if timeout_s is not None else settings.REPORT_LLM_TIMEOUT_S or 50.0)
-    with httpx.Client(timeout=timeout) as client:
-        resp = client.post(url, headers=headers, json=payload)
-        resp.raise_for_status()
-        body = resp.json()
-    choices = body.get("choices") or []
-    if not choices:
-        raise ValueError("LLM returned no choices")
-    message = choices[0].get("message") or {}
-    content = message.get("content")
-    if not content:
-        raise ValueError("LLM returned empty content")
-    return str(content)
+
+    last_error: Optional[Exception] = None
+    for model in _model_candidates():
+        for use_json_mode in (True, False):
+            payload: Dict[str, Any] = {
+                "model": model,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+            }
+            if use_json_mode:
+                payload["response_format"] = {"type": "json_object"}
+
+            try:
+                with httpx.Client(timeout=timeout) as client:
+                    resp = client.post(url, headers=headers, json=payload)
+                    if resp.status_code == 404:
+                        detail = resp.text[:300]
+                        logger.warning(
+                            f"Groq model not found ({model}); "
+                            f"404 on {url} — {detail}"
+                        )
+                        last_error = httpx.HTTPStatusError(
+                            f"404 for model {model}",
+                            request=resp.request,
+                            response=resp,
+                        )
+                        break  # try next model
+                    if resp.status_code in (400, 422) and use_json_mode:
+                        logger.debug(f"Groq rejected json_object for {model}; retrying without")
+                        continue
+                    resp.raise_for_status()
+                    body = resp.json()
+                choices = body.get("choices") or []
+                if not choices:
+                    raise ValueError("LLM returned no choices")
+                message = choices[0].get("message") or {}
+                content = message.get("content")
+                if not content:
+                    raise ValueError("LLM returned empty content")
+                if model != _model_candidates()[0]:
+                    logger.info(f"Groq chat succeeded using fallback model {model}")
+                return str(content)
+            except httpx.HTTPStatusError as e:
+                last_error = e
+                if e.response is not None and e.response.status_code == 404:
+                    break
+                if use_json_mode:
+                    continue
+                raise
+            except Exception as e:
+                last_error = e
+                if use_json_mode:
+                    continue
+                raise
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("Groq chat completions failed for all configured models")
 
 
 def chat_completions_json(

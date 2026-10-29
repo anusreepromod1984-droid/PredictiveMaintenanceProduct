@@ -42,7 +42,19 @@ def _build_query_body(
     duration = _duration_from_date_range(date_range, timezone_name)
     body: Dict[str, Any] = {
         "machineIds": machine_ids,
-        "include": ["meta", "latest", "status", "activity", "alerts", "parameters", "history"],
+        "include": [
+            "meta",
+            "latest",
+            "status",
+            "activity",
+            "alerts",
+            "parameters",
+            "history",
+            "summary",
+            "alertHistory",
+            "uptime",
+            "utilisation",
+        ],
         "history": {
             "source": "db",
             "duration": duration,

@@ -108,7 +108,12 @@ class Settings(BaseSettings):
     REPORT_LLM_API_KEY: str = os.environ.get("REPORT_LLM_API_KEY", "")
     OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "")
     REPORT_LLM_BASE_URL: str = os.environ.get("REPORT_LLM_BASE_URL", "https://api.groq.com/openai/v1")
-    REPORT_LLM_MODEL: str = os.environ.get("REPORT_LLM_MODEL", "llama-3.3-70b-versatile")
+    # llama-3.3-70b-versatile retired on Groq free/dev tier (2026-08-16) → use current OSS/Qwen ids
+    REPORT_LLM_MODEL: str = os.environ.get("REPORT_LLM_MODEL", "openai/gpt-oss-120b")
+    REPORT_LLM_FALLBACK_MODELS: str = os.environ.get(
+        "REPORT_LLM_FALLBACK_MODELS",
+        "qwen/qwen3-32b,openai/gpt-oss-20b",
+    )
     REPORT_LLM_TIMEOUT_S: float = float(os.environ.get("REPORT_LLM_TIMEOUT_S", "50"))
 
     def report_llm_api_key(self) -> str:

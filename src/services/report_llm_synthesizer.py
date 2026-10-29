@@ -19,12 +19,18 @@ logger = get_logger("Services.ReportLLM")
 _SYSTEM_PROMPT = """You write the Remarks section for an industrial predictive maintenance report.
 Use ONLY facts from the provided JSON context. Never invent metrics, dates, or machine names.
 Do not mention AI agents, Alpha, Beta, Gamma, Delta, LangGraph, or internal software pipelines.
-Write for plant managers and reliability engineers: clear, concise, actionable prose.
+Do not add meta-disclaimers (e.g. "written by AI", "verify against figures", "AI-generated").
+Write for plant managers and reliability engineers: detailed, specific, actionable prose.
 Respond with a single JSON object only (no markdown code fences):
-{"summary": "<one paragraph, 80-160 words>", "findings": ["<bullet>", "..."]}
-The summary should state overall fleet/asset condition, the main risks, and what to prioritize first.
-Findings: 3 to 7 bullets, highest priority first; each bullet is one concrete observation or action.
-If alert counts in KPIs differ from snapshot alerts, explain both without guessing causes."""
+{"summary": "<180-280 words in 4-6 sentences>", "findings": ["<bullet>", "..."]}
+Summary must cover, when data exists:
+1) Overall fleet/asset condition and reporting period (timezone-aware).
+2) Connectivity/uptime vs alert load (explain high period alert counts vs snapshot alerts if both appear).
+3) Parameters that exceeded limits (from reportKpis and parameterTrends) and what that implies operationally.
+4) Clear priority actions before the next shift.
+Findings: 6 to 12 bullets, highest priority first — mix observations and concrete actions.
+Each finding should cite numbers from context when available (readings, limits, sample counts, KPI values).
+If data is sparse, state what is missing instead of guessing."""
 
 
 def _llm_configured() -> bool:
@@ -117,6 +123,25 @@ def _machine_context_blocks(
     return blocks
 
 
+def _machine_enrichment_blocks(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    blocks: List[Dict[str, Any]] = []
+    for machine in _machine_rows(payload):
+        mid = str(machine.get("machineId") or machine.get("machine_id") or "unknown")
+        block: Dict[str, Any] = {"machineId": mid}
+        for key in ("summary", "activity", "uptime", "utilisation", "alertHistory"):
+            val = machine.get(key)
+            if val is not None:
+                if isinstance(val, list):
+                    block[key] = val[:25]
+                elif isinstance(val, dict):
+                    block[key] = val
+                else:
+                    block[key] = val
+        if len(block) > 1:
+            blocks.append(block)
+    return blocks
+
+
 def build_report_context(
     *,
     title: str,
@@ -150,6 +175,7 @@ def build_report_context(
             "alertsInSnapshot": snapshot_alert_count,
             "machines": machines,
         },
+        "upstreamEnrichment": _machine_enrichment_blocks(upstream_payload),
     }
 
 
@@ -163,11 +189,16 @@ def _normalize_llm_result(data: Dict[str, Any]) -> Tuple[str, List[str]]:
     bullets = [str(f).strip() for f in findings if f and str(f).strip()]
     if not bullets:
         bullets = ["Review alert history and confirm sensor readings against physical inspection."]
-    return summary.strip(), bullets[:8]
+    return summary.strip(), bullets[:12]
 
 
 def synthesize_with_llm(context: Dict[str, Any]) -> Dict[str, Any]:
-    parsed = chat_completions_json(system_prompt=_SYSTEM_PROMPT, user_payload=context)
+    parsed = chat_completions_json(
+        system_prompt=_SYSTEM_PROMPT,
+        user_payload=context,
+        max_tokens=1600,
+        temperature=0.4,
+    )
     summary, findings = _normalize_llm_result(parsed)
     return {"summary": summary, "findings": findings, "source": "llm"}
 
@@ -183,8 +214,11 @@ def _kpi_value(kpis: List[Dict[str, str]], label_substr: str) -> Optional[str]:
 def synthesize_with_rules(context: Dict[str, Any]) -> Dict[str, Any]:
     """Deterministic fallback — no agent names, prioritizes KPIs and alerts."""
     title = context.get("title") or "Plant report"
-    period = (context.get("period") or {}).get("label") or "the selected period"
-    tz = (context.get("period") or {}).get("timezone")
+    period_info = context.get("period") or {}
+    period = period_info.get("label") or "the selected period"
+    tz = period_info.get("timezone")
+    start = period_info.get("start")
+    end = period_info.get("end")
     kpis = context.get("reportKpis") or []
     snap = context.get("telemetrySnapshot") or {}
     machines = snap.get("machines") or []
@@ -192,56 +226,89 @@ def synthesize_with_rules(context: Dict[str, Any]) -> Dict[str, Any]:
 
     alerts_kpi = _kpi_value(kpis, "alert")
     online_kpi = _kpi_value(kpis, "online")
+    avg_online = _kpi_value(kpis, "average online") or _kpi_value(kpis, "avg online")
     past_limit = _kpi_value(kpis, "past") or _kpi_value(kpis, "limit")
+    open_alerts = _kpi_value(kpis, "open") or _kpi_value(kpis, "still open")
 
     findings: List[str] = []
     for m in machines:
         mid = m.get("machineId") or "asset"
+        state = m.get("connectionState")
+        if state:
+            findings.append(f"{mid}: connection/status — {state}.")
         for a in m.get("alertsInSnapshot") or []:
             param = a.get("parameter") or a.get("message") or "threshold"
             val = a.get("value")
             sev = a.get("severity") or "alert"
             suffix = f" (reading {val})" if val is not None else ""
-            findings.append(f"{mid}: {param} — {sev}{suffix}")
+            findings.append(f"{mid}: {param} — {sev}{suffix} — treat as priority inspection if still active.")
 
-    for m in machines:
-        mid = m.get("machineId") or "asset"
         for t in m.get("parameterTrends") or []:
             pname = t.get("parameter")
+            avg = t.get("avg")
+            mn = t.get("min")
             mx = t.get("max")
-            if pname and mx is not None and any(x in str(pname).lower() for x in ("vibration", "fault", "rpm")):
+            samples = t.get("samples")
+            if not pname or mx is None:
+                continue
+            pname_l = str(pname).lower()
+            if any(x in pname_l for x in ("vibration", "fault", "rpm", "motor", "pressure")):
                 findings.append(
-                    f"{mid}: {pname} peaked at {mx} over {t.get('samples')} samples in the window."
+                    f"{mid}: {pname} — avg {avg}, min {mn}, max {mx} ({samples} samples); "
+                    f"compare peak to configured alert/limit bands in section 03."
                 )
 
+    for k in kpis:
+        hint = k.get("hint")
+        if hint:
+            findings.append(f"Report KPI ({k.get('label')}): {k.get('value')} — {hint}.")
+
     if alerts_kpi:
-        findings.append(f"Report period recorded {alerts_kpi} alert events in total (see alert history for breakdown).")
+        findings.append(
+            f"Period alert volume: {alerts_kpi} events — review alert history for repeat parameters "
+            f"(often vibration-related when limits are tight)."
+        )
+    if open_alerts:
+        findings.append(f"Open alerts at report time: {open_alerts} — acknowledge and close root cause before next shift.")
     if past_limit:
-        findings.append(f"{past_limit} parameter(s) exceeded configured limits during the period.")
+        findings.append(f"Parameters past limit in period: {past_limit} — align with findings table F-01/F-02 actions.")
 
     if not findings:
         findings.append("No critical deviations stood out in the telemetry snapshot; continue scheduled monitoring.")
 
-    summary_bits = [
-        f"{title} covers {n_machines} asset(s) over {period}.",
+    period_window = f"{start} to {end}" if start and end else period
+    summary_parts = [
+        f"{title} summarises {n_machines} asset(s) over {period_window}"
+        + (f" ({tz})." if tz else "."),
     ]
-    if online_kpi:
-        summary_bits.append(f"Connectivity for the period: {online_kpi}.")
+    if online_kpi or avg_online:
+        conn = online_kpi or "see asset register"
+        avg_part = f" Average online time {avg_online}." if avg_online else ""
+        summary_parts.append(
+            f"Connectivity: {conn} for the reporting window.{avg_part} "
+            f"If online counts are low at generation time, confirm whether the asset was delayed vs truly offline."
+        )
     if alerts_kpi:
-        summary_bits.append(f"Alert activity was high ({alerts_kpi} events); focus on repeat parameters first.")
+        summary_parts.append(
+            f"Alert load was very high ({alerts_kpi} events in the period). "
+            f"This usually indicates sustained threshold crossings (often vibration.overall) rather than a single spike — "
+            f"use alert history to find the first crossing and whether limits need tuning vs mechanical fault."
+        )
     elif snap.get("alertsInSnapshot"):
-        summary_bits.append("Active alert conditions appear in the latest telemetry snapshot.")
-    else:
-        summary_bits.append("No active alerts appeared in the latest telemetry snapshot.")
-    if tz:
-        summary_bits.append(f"Figures align to timezone {tz}.")
-    summary_bits.append(
-        "Prioritize physical inspection and limit review on assets with open or repeating alerts before the next shift."
+        summary_parts.append("Latest telemetry snapshot still shows active alert conditions.")
+    if past_limit:
+        summary_parts.append(
+            f"{past_limit} parameter(s) exceeded configured limits — prioritise mechanical inspection, "
+            f"mounting, and sensor validation on those channels."
+        )
+    summary_parts.append(
+        "Before the next shift: inspect assets with open or repeating alerts, confirm readings with a handheld instrument, "
+        "and document whether limits should be adjusted after root-cause is found."
     )
 
     return {
-        "summary": " ".join(summary_bits),
-        "findings": findings[:8],
+        "summary": " ".join(summary_parts),
+        "findings": findings[:12],
         "source": "rules",
     }
 
