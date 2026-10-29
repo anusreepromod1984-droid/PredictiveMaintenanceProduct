@@ -22,6 +22,7 @@ import httpx
 
 from src.config import settings
 from src.schemas.asset import AssetDigitalTwin
+from src.services.ai_query_envelope import normalize_fleet_query_payload
 from src.utils.logger import get_logger
 
 logger = get_logger("Services.ThresholdProvider")
@@ -105,7 +106,11 @@ class UpstreamFleetClient:
                     if resp.status_code == 200:
                         self._consecutive_failures = 0
                         self._circuit_open_until = 0.0
-                        return resp.json()
+                        parsed = normalize_fleet_query_payload(resp.json())
+                        if parsed is None:
+                            logger.warning("Upstream query returned status=false or empty data envelope")
+                            continue
+                        return parsed
                     else:
                         logger.warning(f"Upstream query failed ({resp.status_code}): {resp.text[:200]}")
             except Exception as e:

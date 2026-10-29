@@ -49,13 +49,7 @@ def _build_query_body(
             "maxPoints": 500,
         },
     }
-    if date_range and isinstance(date_range, dict):
-        if date_range.get("start"):
-            body["history"]["start"] = date_range["start"]
-        if date_range.get("end"):
-            body["history"]["end"] = date_range["end"]
-        if timezone_name:
-            body["history"]["timezone"] = timezone_name
+    # Upstream PDM /api/ai/query accepts history.duration only (not start/end/timezone).
     if selected_parameters:
         body["fields"] = selected_parameters
     return body

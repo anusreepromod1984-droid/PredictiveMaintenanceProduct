@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from src.services.ai_query_envelope import normalize_fleet_query_payload
 from src.services.threshold_provider import UpstreamFleetClient
 from src.utils.logger import get_logger
 
@@ -32,6 +33,7 @@ CONNECTIVITY_INCLUDES = ["mqtt", "topics", "upstream", "client"]
 
 
 def _machine_rows(payload: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    payload = normalize_fleet_query_payload(payload)
     if not payload or not isinstance(payload.get("machines"), list):
         return []
     return [m for m in payload["machines"] if isinstance(m, dict)]
