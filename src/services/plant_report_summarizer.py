@@ -214,41 +214,46 @@ def generate_report_summary(
     tenant_id: Optional[str] = None,
     upstream_client: Optional[UpstreamFleetClient] = None,
 ) -> Dict[str, Any]:
-    """Agent LangGraph report pipeline (insight graph + agent-derived summary)."""
-    from src.agents.report_insight_orchestrator import report_insight_orchestrator
+    """Fetch report telemetry, then LLM (or rules) narrative for Remarks — no agent names in output."""
+    from src.services.report_llm_synthesizer import build_report_context, synthesize_report_insights
+
+    client = upstream_client or UpstreamFleetClient(timeout_s=REPORT_QUERY_TIMEOUT_S)
+    if not client.is_configured:
+        raise ValueError("Upstream fleet API not configured (AI_SERVICE_API_KEY)")
+
+    body = _build_query_body(machine_ids, date_range, timezone_name, selected_parameters)
+    payload = client.query(body)
+    if not payload:
+        raise RuntimeError("Upstream POST /api/ai/query failed or returned no data")
 
     period_label = _duration_from_date_range(date_range, timezone_name)
     org = company or "Plant"
     rtype = (report_type or "operational").replace("_", " ")
     report_title = title or f"{org} {rtype} report"
 
-    meta = {
-        "tenant_id": tenant_id,
-        "company": company,
-        "report_type": report_type,
-        "title": report_title,
-        "date_range": date_range,
-        "timezone": timezone_name,
-        "selected_parameters": selected_parameters,
-        "kpis": kpis,
-        "period_label": period_label,
-        "machine_ids": machine_ids,
+    context = build_report_context(
+        title=report_title,
+        report_type=report_type,
+        company=company,
+        machine_ids=machine_ids,
+        date_range=date_range,
+        timezone_name=timezone_name,
+        selected_parameters=selected_parameters,
+        kpis=kpis,
+        upstream_payload=payload,
+    )
+    narrative = synthesize_report_insights(context)
+    machines = _machine_rows(payload)
+
+    return {
+        "summary": narrative["summary"],
+        "findings": narrative["findings"],
+        "graph": {},
+        "meta": {
+            "tenant_id": tenant_id,
+            "machinesQueried": machine_ids,
+            "machinesReturned": len(machines),
+            "generatedAt": datetime.now(timezone.utc).isoformat(),
+            "synthesis": narrative.get("source", "unknown"),
+        },
     }
-    try:
-        return report_insight_orchestrator.run(meta, machine_ids)
-    except Exception as e:
-        logger.warning(f"Agent report graph failed ({e}); falling back to legacy summarizer")
-        legacy = generate_report_summary_legacy(
-            company=company,
-            report_type=report_type,
-            title=title,
-            machine_ids=machine_ids,
-            date_range=date_range,
-            timezone_name=timezone_name,
-            selected_parameters=selected_parameters,
-            kpis=kpis,
-            upstream_client=upstream_client,
-        )
-        legacy["meta"] = legacy.get("meta") or {}
-        legacy["meta"]["fallback"] = "legacy_summarizer"
-        return legacy

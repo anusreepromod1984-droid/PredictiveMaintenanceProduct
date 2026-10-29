@@ -14,6 +14,7 @@ from src.db.historian import platform_historian
 from src.services.fleet_live_diagnosis import try_fleet_live_diagnosis
 from src.middleware.auth import get_current_principal
 from src.api.tenant_scope import resolve_machine_asset
+from src.services.fault_assistant_llm import enrich_fault_assistant
 from src.services.report_summary_store import get_latest_for_asset, get_latest_for_machine
 
 router = APIRouter(prefix="/api/v1", tags=["Dashboard card"])
@@ -224,6 +225,8 @@ def to_frontend_diagnosis(machine_id: str, diag: Dict[str, Any]) -> Dict[str, An
     ts = diag.get("timestamp")
     generated_at = int(float(ts) * 1000) if isinstance(ts, (int, float)) else 0
 
+    analyst = diag.get("analyst_assist") if isinstance(diag.get("analyst_assist"), dict) else None
+
     return {
         "machineId": machine_id,
         "archetype": archetype,
@@ -232,6 +235,7 @@ def to_frontend_diagnosis(machine_id: str, diag: Dict[str, Any]) -> Dict[str, An
         "severity": severity,
         "summary": "\n".join(summary),
         "recommendedActions": actions,
+        "analystAssist": analyst,
         "faultExplanation": {
             "whatIsIt": name if is_defect else headline,
             "rootCause": str(first.get("failure_domain") or "No isolated fault on this run."),
@@ -268,6 +272,25 @@ def _attach_report_summary(
             "graph": rec.get("graph") or {},
         }
     return payload
+
+
+def _respond_assistant(
+    payload: Dict[str, Any],
+    *,
+    tenant_id: str,
+    asset_id: str,
+    machine_id: str,
+    breaches: List[Dict[str, Any]],
+    telemetry: Dict[str, Any],
+) -> Dict[str, Any]:
+    attached = _attach_report_summary(payload, tenant_id, asset_id, machine_id)
+    return enrich_fault_assistant(
+        attached,
+        machine_id=machine_id,
+        breaches=breaches,
+        telemetry=telemetry,
+        report_summary=attached.get("reportSummary"),
+    )
 
 
 def _history_row(diag: Dict[str, Any]) -> Dict[str, Any]:
@@ -320,13 +343,22 @@ async def fault_assistant(
             or "NORMAL" in str(res.get("archetype"))
             or "STANDBY" in str(res.get("archetype"))
         ):
-            return _attach_report_summary(
+            return _respond_assistant(
                 _synthesize_breach_diagnosis(machine_id, breaches, telemetry),
-                scoped_tenant,
-                scoped_asset,
-                machine_id,
+                tenant_id=scoped_tenant,
+                asset_id=scoped_asset,
+                machine_id=machine_id,
+                breaches=breaches,
+                telemetry=telemetry,
             )
-        return _attach_report_summary(res, scoped_tenant, scoped_asset, machine_id)
+        return _respond_assistant(
+            res,
+            tenant_id=scoped_tenant,
+            asset_id=scoped_asset,
+            machine_id=machine_id,
+            breaches=breaches,
+            telemetry=telemetry,
+        )
 
     fleet_result, fleet_alerts, _fleet_block = try_fleet_live_diagnosis(machine_id, tenant_id)
     if fleet_alerts and not breaches:
@@ -338,13 +370,22 @@ async def fault_assistant(
             or "NORMAL" in str(res.get("archetype"))
             or "STANDBY" in str(res.get("archetype"))
         ):
-            return _attach_report_summary(
+            return _respond_assistant(
                 _synthesize_breach_diagnosis(machine_id, breaches, telemetry),
-                scoped_tenant,
-                scoped_asset,
-                machine_id,
+                tenant_id=scoped_tenant,
+                asset_id=scoped_asset,
+                machine_id=machine_id,
+                breaches=breaches,
+                telemetry=telemetry,
             )
-        return _attach_report_summary(res, scoped_tenant, scoped_asset, machine_id)
+        return _respond_assistant(
+            res,
+            tenant_id=scoped_tenant,
+            asset_id=scoped_asset,
+            machine_id=machine_id,
+            breaches=breaches,
+            telemetry=telemetry,
+        )
 
     # Check if telemetry has vibration exceeding API limits even if breaches list is empty
     if not breaches and telemetry:
@@ -362,11 +403,13 @@ async def fault_assistant(
     diag = cached_diag
     if not diag:
         if breaches or telemetry:
-            return _attach_report_summary(
+            return _respond_assistant(
                 _synthesize_breach_diagnosis(machine_id, breaches, telemetry),
-                scoped_tenant,
-                scoped_asset,
-                machine_id,
+                tenant_id=scoped_tenant,
+                asset_id=scoped_asset,
+                machine_id=machine_id,
+                breaches=breaches,
+                telemetry=telemetry,
             )
         raise HTTPException(status_code=404, detail=f"No diagnostic run for {machine_id}")
 
@@ -375,9 +418,23 @@ async def fault_assistant(
     # If active alert breaches are present, force elevation to Critical
     if breaches and (res.get("severity") != "critical" or "NORMAL" in str(res.get("archetype")) or "STANDBY" in str(res.get("archetype"))):
         synth = _synthesize_breach_diagnosis(machine_id, breaches, telemetry)
-        return _attach_report_summary(synth, scoped_tenant, scoped_asset, machine_id)
+        return _respond_assistant(
+            synth,
+            tenant_id=scoped_tenant,
+            asset_id=scoped_asset,
+            machine_id=machine_id,
+            breaches=breaches,
+            telemetry=telemetry,
+        )
 
-    return _attach_report_summary(res, scoped_tenant, scoped_asset, machine_id)
+    return _respond_assistant(
+        res,
+        tenant_id=scoped_tenant,
+        asset_id=scoped_asset,
+        machine_id=machine_id,
+        breaches=breaches,
+        telemetry=telemetry,
+    )
 
 
 @router.get("/predict/history/{machine_id}")

@@ -98,6 +98,50 @@ class Settings(BaseSettings):
     FLEET_MQTT_MACHINE_ID: str = os.environ.get("FLEET_MQTT_MACHINE_ID", "")
     THRESHOLD_CACHE_TTL_SEC: float = float(os.environ.get("THRESHOLD_CACHE_TTL_SEC", "300.0"))
 
+    # Plant report Remarks — LLM via Groq (OpenAI-compatible POST .../chat/completions)
+    REPORT_LLM_ENABLED: bool = os.environ.get("REPORT_LLM_ENABLED", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    GROQ_API_KEY: str = os.environ.get("GROQ_API_KEY", "")
+    REPORT_LLM_API_KEY: str = os.environ.get("REPORT_LLM_API_KEY", "")
+    OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "")
+    REPORT_LLM_BASE_URL: str = os.environ.get("REPORT_LLM_BASE_URL", "https://api.groq.com/openai/v1")
+    REPORT_LLM_MODEL: str = os.environ.get("REPORT_LLM_MODEL", "llama-3.3-70b-versatile")
+    REPORT_LLM_TIMEOUT_S: float = float(os.environ.get("REPORT_LLM_TIMEOUT_S", "50"))
+
+    def report_llm_api_key(self) -> str:
+        return (self.REPORT_LLM_API_KEY or self.GROQ_API_KEY or self.OPENAI_API_KEY or "").strip()
+
+    ASSISTANT_LLM_ENABLED: bool = os.environ.get("ASSISTANT_LLM_ENABLED", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    AGENT_ANALYST_LLM_ENABLED: bool = os.environ.get("AGENT_ANALYST_LLM_ENABLED", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    ASSISTANT_USE_PIPELINE_ANALYST: bool = os.environ.get("ASSISTANT_USE_PIPELINE_ANALYST", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+    @property
+    def report_llm_enabled(self) -> bool:
+        return self.REPORT_LLM_ENABLED and bool(self.report_llm_api_key())
+
+    @property
+    def assistant_llm_enabled(self) -> bool:
+        return self.ASSISTANT_LLM_ENABLED and bool(self.report_llm_api_key())
+
+    @property
+    def agent_analyst_llm_enabled(self) -> bool:
+        return self.AGENT_ANALYST_LLM_ENABLED and bool(self.report_llm_api_key())
+
     # -----------------------------------------------------------------------
     # Machine Specs & Internet Search Agent
     # -----------------------------------------------------------------------

@@ -210,8 +210,32 @@ class DynamicAPMSOrchestrator:
             prognostics=prognostics,
             prescriptive_action=prescriptive,
             execution_time_ms=elapsed_ms,
-            agent_trace=final_state.get("agent_trace", [])
+            agent_trace=final_state.get("agent_trace", []),
         )
+
+        try:
+            from src.services.agent_analyst_assist import augment_diagnostic_with_analyst
+
+            assist = augment_diagnostic_with_analyst(
+                tenant_id=packet.tenant_id,
+                asset_id=packet.asset_id,
+                signals=dict(packet.signals or {}),
+                alpha=alpha,
+                beta=beta,
+                gamma=gamma,
+                delta=delta if isinstance(delta, dict) else None,
+                result_summary={
+                    "health_status": health_status,
+                    "health_score": health_score,
+                    "operating_regime": beta.get("regime", "NORMAL"),
+                    "fault_count": len(active_faults),
+                    "fault_codes": [f.fault_code for f in active_faults[:5]],
+                },
+            )
+            if assist:
+                result = result.model_copy(update={"analyst_assist": assist})
+        except Exception as e:
+            logger.warning(f"Analyst assist skipped: {e}")
 
         # Cache diagnostic result in isolated buffer (also writes through to historian)
         platform_buffer.save_diagnostic(packet.tenant_id, packet.asset_id, result.model_dump())

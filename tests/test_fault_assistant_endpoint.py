@@ -4,6 +4,12 @@ from src.api.main import app
 from src.core.buffer import platform_buffer
 
 client = TestClient(app)
+import pytest
+from src.config import settings
+
+@pytest.fixture(autouse=True)
+def _disable_live_llm(monkeypatch):
+    monkeypatch.setattr(settings, "ASSISTANT_LLM_ENABLED", False)
 
 
 def test_fault_assistant_synthesizes_breach_when_no_buffer():

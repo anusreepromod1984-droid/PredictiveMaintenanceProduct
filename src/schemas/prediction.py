@@ -62,3 +62,7 @@ class DiagnosticResult(BaseModel):
     # Context & Diagnostics
     execution_time_ms: float = 0.0
     agent_trace: List[str] = Field(default_factory=list)
+    analyst_assist: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optional Groq analyst second opinion; does not override agent verdicts",
+    )
