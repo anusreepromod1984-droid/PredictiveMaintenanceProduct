@@ -110,9 +110,12 @@ def files_to_prompt_blocks(files: List[dict]) -> Tuple[str, List[dict]]:
         url = f.get("url")
         if not url:
             continue
-        raw = download_file(url)
         mime = str(f.get("type") or "")
         name = str(f.get("name") or "file")
+        try:
+            raw = download_file(url)
+        except Exception:
+            continue
         if is_image(mime, name):
             images.append({"mime": mime or "image/jpeg", "data": raw, "name": name})
             continue

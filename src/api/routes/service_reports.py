@@ -80,7 +80,12 @@ def analyze(
         f"Service report analyze document={body.documentId} company={body.companySlug} "
         f"files={len(body.files)} caller={principal.get('sub')}"
     )
-    return analyze_service_report(body.model_dump())
+    try:
+        return analyze_service_report(body.model_dump())
+    except Exception as e:
+        logger.warning(f"Service report analyze failed ({e})")
+        from src.services.service_report_analyze import _empty
+        return _empty()
 
 
 @router.post("/effect")
