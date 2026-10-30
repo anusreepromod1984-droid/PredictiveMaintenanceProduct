@@ -12,25 +12,33 @@ from src.config import settings
 from src.services.llm_client import chat_completions_json, extract_json_object
 from src.services.fleet_query_service import _machine_rows
 from src.services.plant_report_summarizer import _duration_from_date_range
+from src.services.report_remarks_format import (
+    enrich_context_for_professional_output,
+    polish_remarks_output,
+)
 from src.utils.logger import get_logger
 
 logger = get_logger("Services.ReportLLM")
 
-_SYSTEM_PROMPT = """You write the Remarks section for an industrial predictive maintenance report.
-Use ONLY facts from the provided JSON context. Never invent metrics, dates, or machine names.
-Do not mention AI agents, Alpha, Beta, Gamma, Delta, LangGraph, or internal software pipelines.
-Do not add meta-disclaimers (e.g. "written by AI", "verify against figures", "AI-generated").
-Write for plant managers and reliability engineers: detailed, specific, actionable prose.
-Respond with a single JSON object only (no markdown code fences):
-{"summary": "<180-280 words in 4-6 sentences>", "findings": ["<bullet>", "..."]}
-Summary must cover, when data exists:
-1) Overall fleet/asset condition and reporting period (timezone-aware).
-2) Connectivity/uptime vs alert load (explain high period alert counts vs snapshot alerts if both appear).
-3) Parameters that exceeded limits (from reportKpis and parameterTrends) and what that implies operationally.
-4) Clear priority actions before the next shift.
-Findings: 6 to 12 bullets, highest priority first — mix observations and concrete actions.
-Each finding should cite numbers from context when available (readings, limits, sample counts, KPI values).
-If data is sparse, state what is missing instead of guessing."""
+_SYSTEM_PROMPT = """You write the Remarks section for an enterprise predictive maintenance / APM fleet report
+(Siemens MindSphere, GE APM, SKF @ptitude-style executive summary).
+
+Use ONLY facts from operationalBrief and authoritativeKpis in the JSON context.
+authoritativeKpis override telemetry for period totals (alert counts, online %, past-limit counts).
+Never invent metrics, dates, or machine names. Never use raw milliseconds — use min, h, or days only.
+Do not mention AI, agents, Alpha/Beta/Gamma/Delta, or internal pipelines.
+Do not add disclaimers ("written by AI", "verify against figures").
+
+Respond with a single JSON object only:
+{"summary": "<one executive paragraph, 120-200 words, formal tone>", "findings": ["<bullet>", "..."]}
+
+Summary (one paragraph): reporting period (from reportingPeriod), fleet/asset condition, uptime/connectivity
+vs current online state, dominant alert/parameter pattern, operational implication, focus before next shift.
+
+Findings: 5-10 bullets. Start each with "Priority 1 —", "Priority 2 —", or "Priority 3 —" (1=immediate).
+Include limit/threshold values when known. Reference past-limit KPIs and parameterTrends max/avg.
+Explain high period alert counts vs snapshot alert count when both exist.
+If data is missing, state the gap — do not guess."""
 
 
 def _llm_configured() -> bool:
@@ -193,13 +201,15 @@ def _normalize_llm_result(data: Dict[str, Any]) -> Tuple[str, List[str]]:
 
 
 def synthesize_with_llm(context: Dict[str, Any]) -> Dict[str, Any]:
+    llm_context = enrich_context_for_professional_output(context)
     parsed = chat_completions_json(
         system_prompt=_SYSTEM_PROMPT,
-        user_payload=context,
+        user_payload=llm_context,
         max_tokens=1600,
-        temperature=0.4,
+        temperature=0.35,
     )
     summary, findings = _normalize_llm_result(parsed)
+    summary, findings = polish_remarks_output(summary, findings, context)
     return {"summary": summary, "findings": findings, "source": "llm"}
 
 
@@ -306,9 +316,10 @@ def synthesize_with_rules(context: Dict[str, Any]) -> Dict[str, Any]:
         "and document whether limits should be adjusted after root-cause is found."
     )
 
+    summary, findings = polish_remarks_output(" ".join(summary_parts), findings[:12], context)
     return {
-        "summary": " ".join(summary_parts),
-        "findings": findings[:12],
+        "summary": summary,
+        "findings": findings,
         "source": "rules",
     }
 
