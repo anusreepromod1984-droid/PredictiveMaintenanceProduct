@@ -209,10 +209,57 @@ def _call_llm(user_text: str, images: List[dict]) -> Dict[str, Any]:
     return extract_json_object(raw)
 
 
+def extract_from_plain_text(text: str) -> Dict[str, Any]:
+    """Best-effort parse when Groq is unavailable. Never invents numbers not on the page."""
+    out = _empty()
+    if not text:
+        return out
+    dates = re.findall(r"\b(\d{2})-(\d{2})-(\d{4})\b", text)
+    iso_dates: List[str] = []
+    for d, m, y in dates:
+        iso_dates.append(f"{y}-{m}-{d}")
+    iso_dates += re.findall(r"\b(\d{4}-\d{2}-\d{2})\b", text)
+    if iso_dates:
+        out["serviceDate"] = iso_dates[0]
+        if len(iso_dates) > 1:
+            out["nextServiceDue"] = iso_dates[-1]
+        out["confidence"]["serviceDate"] = 0.75
+    low = text.lower()
+    if "preventive" in low:
+        out["type"] = "PREVENTIVE"
+        out["confidence"]["type"] = 0.8
+    elif "corrective" in low:
+        out["type"] = "CORRECTIVE"
+        out["confidence"]["type"] = 0.8
+    elif "breakdown" in low:
+        out["type"] = "BREAKDOWN"
+        out["confidence"]["type"] = 0.8
+    elif "inspection" in low:
+        out["type"] = "INSPECTION"
+        out["confidence"]["type"] = 0.8
+    elif "calibration" in low:
+        out["type"] = "CALIBRATION"
+        out["confidence"]["type"] = 0.8
+    tech = re.search(r"Technician[:\s]+([A-Za-z. ]{2,40})", text)
+    if tech:
+        out["technician"] = tech.group(1).strip()[:200]
+        out["confidence"]["technician"] = 0.75
+    vendor = re.search(r"Vendor[:\s]+([^\n]{2,80})", text)
+    if vendor:
+        out["vendor"] = vendor.group(1).strip()[:200]
+        out["confidence"]["vendor"] = 0.7
+    out["summary"] = " ".join(text.split())[:500] or None
+    return out
+
+
 def analyze_service_report(body: Dict[str, Any]) -> Dict[str, Any]:
     hints = body.get("hints") or {}
     machine = body.get("machine") or {}
-    text, images = files_to_prompt_blocks(body.get("files") or [])
+    try:
+        text, images = files_to_prompt_blocks(body.get("files") or [])
+    except Exception as e:
+        logger.warning(f"Service report analyze: file fetch failed ({e})")
+        return _empty()
     preamble = (
         f"Machine on file: id={machine.get('id')} name={machine.get('name')} model={machine.get('model')}\n"
         f"User hints (not authoritative): serviceDate={hints.get('serviceDate')} vendor={hints.get('vendor')}\n\n"
@@ -220,14 +267,11 @@ def analyze_service_report(body: Dict[str, Any]) -> Dict[str, Any]:
     if not text and not images:
         logger.warning("Service report analyze: no extractable text or images")
         return _empty()
-    if not settings.report_llm_enabled:
-        logger.warning("Service report analyze: GROQ_API_KEY missing")
-        return _empty()
-    try:
-        parsed = _call_llm(preamble + text, images if not text else [])
-    except Exception as e:
-        logger.warning(f"Service report analyze LLM failed ({e})")
-        return _empty()
-    if not isinstance(parsed, dict):
-        return _empty()
-    return normalize_extraction(parsed)
+    if settings.report_llm_enabled:
+        try:
+            parsed = _call_llm(preamble + text, images if not text else [])
+            if isinstance(parsed, dict):
+                return normalize_extraction(parsed)
+        except Exception as e:
+            logger.warning(f"Service report analyze LLM failed ({e}); using text fallback")
+    return extract_from_plain_text(text)

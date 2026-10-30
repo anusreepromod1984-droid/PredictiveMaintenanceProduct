@@ -138,6 +138,23 @@ def test_analyze_endpoint_returns_bare_object(monkeypatch):
     assert "status" not in data
 
 
+def test_extract_from_plain_text():
+    from src.services.service_report_analyze import extract_from_plain_text
+
+    text = """
+    Service date 30-07-2026
+    Type Preventive
+    Technician R. Kumar
+    Vendor In-house maintenance
+    Next service due 30-10-2026
+    """
+    out = extract_from_plain_text(text)
+    assert out["serviceDate"] == "2026-07-30"
+    assert out["type"] == "PREVENTIVE"
+    assert out["technician"] == "R. Kumar"
+    assert out["nextServiceDue"] == "2026-10-30"
+
+
 def test_effect_endpoint():
     resp = client.post("/api/v1/service-reports/effect", json=_EFFECT)
     assert resp.status_code == 200
