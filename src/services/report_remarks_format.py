@@ -20,7 +20,7 @@ _DISCLAIMER_PATTERNS = (
     r"verify against the figures.*",
 )
 
-_PRIORITY_PREFIX = re.compile(r"^(?:\*\*)?(?:priority\s*)?(?:p[123]|P[123])[\s.:—-]+", re.I)
+_PRIORITY_HEAD = re.compile(r"^Priority\s*([123])\s*[—–\-:\.]+\s*", re.I)
 
 
 def format_duration_ms(ms: Optional[Union[int, float]]) -> Optional[str]:
@@ -167,19 +167,43 @@ def strip_disclaimers(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _dedupe_priority_prefix(bullet: str) -> Tuple[Optional[int], str]:
+    """Strip chained 'Priority N —' prefixes; keep the first level only."""
+    s = bullet.strip()
+    levels: List[int] = []
+    while True:
+        m = _PRIORITY_HEAD.match(s)
+        if not m:
+            break
+        levels.append(int(m.group(1)))
+        s = s[m.end() :].strip()
+    return (levels[0] if levels else None), s
+
+
+def _is_disclaimer_only(text: str) -> bool:
+    low = text.strip().lower()
+    if not low:
+        return True
+    return any(re.search(p, low) for p in _DISCLAIMER_PATTERNS)
+
+
 def normalize_finding_bullet(bullet: str, index: int) -> str:
     b = bullet.strip()
     b = _replace_ms_in_text(b)
     b = strip_disclaimers(b)
-    if not b:
-        return b
-    if _PRIORITY_PREFIX.match(b):
-        return b
-    if index == 0:
-        return f"Priority 1 — {b}"
-    if index <= 2:
-        return f"Priority 2 — {b}"
-    return f"Priority 3 — {b}"
+    if not b or _is_disclaimer_only(b):
+        return ""
+    level, body = _dedupe_priority_prefix(b)
+    if not body:
+        return ""
+    if level is None:
+        if index == 0:
+            level = 1
+        elif index <= 2:
+            level = 2
+        else:
+            level = 3
+    return f"Priority {level} — {body}"
 
 
 def polish_remarks_output(
@@ -215,7 +239,7 @@ def enrich_context_for_professional_output(context: Dict[str, Any]) -> Dict[str,
                 "Single cohesive executive paragraph: condition → key risk → connectivity/uptime → "
                 "alert pattern → recommended focus before next shift."
             ),
-            "findingStructure": "Each finding: Priority N — observation or action with units and limits cited.",
-            "forbidden": ["milliseconds", "ms ", "AI disclaimers", "agent codenames"],
+            "findingStructure": "Each finding exactly one prefix: Priority N — then text (never repeat Priority twice).",
+            "forbidden": ["milliseconds", "ms ", "AI disclaimers", "agent codenames", "duplicate Priority prefixes"],
         },
     }

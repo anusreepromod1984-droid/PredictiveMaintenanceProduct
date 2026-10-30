@@ -35,8 +35,9 @@ Respond with a single JSON object only:
 Summary (one paragraph): reporting period (from reportingPeriod), fleet/asset condition, uptime/connectivity
 vs current online state, dominant alert/parameter pattern, operational implication, focus before next shift.
 
-Findings: 5-10 bullets. Start each with "Priority 1 —", "Priority 2 —", or "Priority 3 —" (1=immediate).
+Findings: 5-10 bullets. Each bullet must start with exactly ONE prefix: "Priority 1 —", "Priority 2 —", or "Priority 3 —" (1=immediate). Never stack two Priority prefixes on the same line.
 Include limit/threshold values when known. Reference past-limit KPIs and parameterTrends max/avg.
+Match authoritativeKpis for "online now" (do not claim full availability if KPI shows 0/1 online).
 Explain high period alert counts vs snapshot alert count when both exist.
 If data is missing, state the gap — do not guess."""
 

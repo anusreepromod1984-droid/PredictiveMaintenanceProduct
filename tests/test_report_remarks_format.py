@@ -33,6 +33,13 @@ def test_strip_disclaimers():
     assert "Good summary" in strip_disclaimers(text)
 
 
+def test_dedupe_double_priority_prefix():
+    raw = "Priority 1 — Priority 1 — Vibration overall exceeds limit."
+    _, findings = polish_remarks_output("Summary.", [raw])
+    assert findings[0] == "Priority 1 — Vibration overall exceeds limit."
+    assert findings[0].count("Priority 1") == 1
+
+
 def test_polish_remarks_adds_priority_and_fixes_ms():
     summary = "Asset saw 142785819 ms idle."
     findings = ["Check vibration (0.12 vs 0.1 limit)."]
