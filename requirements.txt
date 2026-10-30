@@ -28,6 +28,9 @@ paho-mqtt>=1.6.0          # MQTT edge ingestion (fleet-resolved broker/topics)
 # --- Observability ---
 # prometheus-client>=0.17.0   # Uncomment for native Prometheus multiprocess mode
 
+# --- Service report document text (PDF uploads) ---
+pypdf>=4.0.0
+
 # --- Testing ---
 pytest>=7.3.0
 httpx>=0.24.0

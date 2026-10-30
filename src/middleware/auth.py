@@ -113,12 +113,14 @@ def get_current_principal(
         if settings.AI_SERVICE_API_KEY and hmac.compare_digest(clean_key, settings.AI_SERVICE_API_KEY.strip()):
             tenant_claim = request.headers.get("X-Tenant-Id") or request.query_params.get("tenant_id")
             prod = (settings.ENVIRONMENT or "").lower() == "production" and not settings.AUTH_DISABLED
-            if prod and not tenant_claim:
+            # Platform service-report webhooks send X-API-Key only (companySlug is in the body).
+            platform_service_report = "/service-reports/" in (request.url.path or "")
+            if prod and not tenant_claim and not platform_service_report:
                 raise HTTPException(
                     status_code=401,
                     detail="X-Tenant-Id (or tenant_id query) required with service API key in production",
                 )
-            if prod and str(tenant_claim).strip() == "*":
+            if prod and str(tenant_claim or "").strip() == "*" and not platform_service_report:
                 raise HTTPException(status_code=403, detail="Wildcard tenant not allowed in production")
             tenant_claim = tenant_claim or "*"
             logger.debug(f"Service Key auth OK for tenant={tenant_claim}")
