@@ -7,9 +7,8 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.agents.dynamic_orchestrator import global_orchestrator
-from src.registry.asset_registry import asset_twin_registry
+from src.api.tenant_scope import resolve_scoped_machine
 from src.schemas.prediction import DiagnosticResult
-from src.services.fleet_machine_resolver import resolve_fleet_machine
 from src.services.fleet_query_service import fleet_query_service
 from src.services.fleet_telemetry_adapter import (
     alerts_to_breaches,
@@ -41,11 +40,10 @@ def try_fleet_live_diagnosis(
     if not fleet_query_service.is_configured():
         return None, [], None
 
-    resolved = resolve_fleet_machine(machine_id, tenant_hint)
-    if not resolved:
+    if not tenant_hint or not str(tenant_hint).strip():
         return None, [], None
 
-    tenant_id, asset_id, twin, tenant_profile = resolved
+    tenant_id, asset_id, twin, tenant_profile = resolve_scoped_machine(machine_id, tenant_hint)
     payload = fleet_query_service.query_snapshot(
         [machine_id],
         include=["latest", "alerts", "activity", "status", "parameters"],

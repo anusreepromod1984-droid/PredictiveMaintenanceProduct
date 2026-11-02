@@ -230,13 +230,27 @@ def generate_report_summary(
     from src.services.report_llm_synthesizer import build_report_context, synthesize_report_insights
 
     client = upstream_client or UpstreamFleetClient(timeout_s=REPORT_QUERY_TIMEOUT_S)
-    if not client.is_configured:
-        raise ValueError("Upstream fleet API not configured (AI_SERVICE_API_KEY)")
+    upstream_degraded = False
+    payload: Optional[Dict[str, Any]] = None
 
-    body = _build_query_body(machine_ids, date_range, timezone_name, selected_parameters)
-    payload = client.query(body)
-    if not payload:
-        raise RuntimeError("Upstream POST /api/ai/query failed or returned no data")
+    if client.is_configured:
+        body = _build_query_body(machine_ids, date_range, timezone_name, selected_parameters)
+        try:
+            payload = client.query(body)
+        except Exception as e:
+            logger.warning(f"Upstream POST /api/ai/query failed ({e}); using report KPIs only")
+            upstream_degraded = True
+        if not payload:
+            if not upstream_degraded:
+                logger.warning("Upstream POST /api/ai/query returned no data; using report KPIs only")
+            upstream_degraded = True
+            payload = {}
+    elif kpis:
+        logger.warning("Upstream fleet API not configured; using report KPIs only")
+        upstream_degraded = True
+        payload = {}
+    else:
+        raise ValueError("Upstream fleet API not configured (AI_SERVICE_API_KEY)")
 
     period_label = _duration_from_date_range(date_range, timezone_name)
     org = company or "Plant"
@@ -267,5 +281,6 @@ def generate_report_summary(
             "machinesReturned": len(machines),
             "generatedAt": datetime.now(timezone.utc).isoformat(),
             "synthesis": narrative.get("source", "unknown"),
+            "upstreamDegraded": upstream_degraded,
         },
     }

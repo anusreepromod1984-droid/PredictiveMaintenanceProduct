@@ -119,6 +119,12 @@ def build_operational_brief(context: Dict[str, Any]) -> Dict[str, Any]:
             "Use Priority 1 / 2 / 3 prefixes on finding bullets (1 = immediate).",
         ],
     }
+    snap = context.get("telemetrySnapshot") or {}
+    if (snap.get("machinesReturned") or 0) == 0 and kpis:
+        brief["dataAvailabilityNote"] = (
+            "Live telemetry snapshot unavailable; base the narrative only on authoritativeKpis "
+            "and reportingPeriod."
+        )
     return brief
 
 

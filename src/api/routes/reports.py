@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field, model_validator
 from src.config import settings
 
 from src.middleware.auth import get_current_principal, assert_tenant_access
-from src.services.fleet_machine_resolver import resolve_fleet_machine
+from src.api.tenant_scope import validate_tenant_scoped_machine_ids
 from src.services.plant_report_summarizer import generate_report_summary
 from src.services.report_summary_store import save_machine_report_summary
 from src.utils.logger import get_logger
@@ -112,21 +112,6 @@ def _resolve_tenant(req: ReportSummaryRequest, principal: Dict[str, Any]) -> str
     return str(tenant).lower()
 
 
-def _assert_machines(tenant_id: str, machine_ids: List[str]) -> None:
-    if not machine_ids:
-        raise HTTPException(status_code=400, detail="machineIds must be a non-empty list")
-    for mid in machine_ids:
-        resolved = resolve_fleet_machine(mid, tenant_id)
-        if not resolved:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No agent twin mapped for machine '{mid}' under tenant '{tenant_id}'",
-            )
-        t_id, _, _, _ = resolved
-        if t_id.lower() != tenant_id.lower():
-            raise HTTPException(status_code=403, detail=f"Machine '{mid}' belongs to another tenant")
-
-
 @router.post(
     "/summary",
     response_model=ReportSummaryResponse,
@@ -143,7 +128,7 @@ def create_report_summary(
     """
     tenant_id = _resolve_tenant(req, principal)
     machine_ids = [m.strip() for m in req.machine_ids if m and str(m).strip()]
-    _assert_machines(tenant_id, machine_ids)
+    validate_tenant_scoped_machine_ids(tenant_id, machine_ids)
 
     date_range_dict = dict(req.date_range) if req.date_range else None
     kpi_list = [k.model_dump(exclude_none=True) for k in req.kpis] if req.kpis else None

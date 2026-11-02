@@ -240,12 +240,11 @@ class ReportInsightOrchestrator:
             if not mid:
                 continue
             tenant_id = state["report_meta"].get("tenant_id")
-            from src.services.fleet_machine_resolver import resolve_fleet_machine
-
-            resolved = resolve_fleet_machine(mid, tenant_id)
-            if not resolved:
+            if not tenant_id:
                 continue
-            t_id, a_id, twin, tenant_profile = resolved
+            from src.api.tenant_scope import resolve_scoped_machine
+
+            t_id, a_id, twin, tenant_profile = resolve_scoped_machine(mid, str(tenant_id))
             row = latest_row_from_machine_payload(machine)
             if not row:
                 history = machine.get("history") if isinstance(machine.get("history"), dict) else {}

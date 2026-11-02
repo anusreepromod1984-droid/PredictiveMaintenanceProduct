@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from src.middleware.auth import assert_tenant_access, get_current_principal
 from src.services.fleet_history_ingest import sync_history_from_fleet_api
+from src.api.tenant_scope import validate_tenant_scoped_machine_ids
 from src.services.fleet_machine_resolver import (
     list_registered_fleet_machine_ids,
     resolve_fleet_machine,
@@ -37,17 +38,18 @@ def _principal_tenant_scope(principal: Dict[str, Any]) -> Optional[str]:
 
 
 def _assert_machine_access(principal: Dict[str, Any], machine_id: str, tenant_hint: Optional[str] = None):
-    resolved = resolve_fleet_machine(machine_id, tenant_hint)
+    scope = (tenant_hint or _principal_tenant_scope(principal) or "").strip().lower()
+    if scope:
+        assert_tenant_access(principal, scope)
+        validate_tenant_scoped_machine_ids(scope, [machine_id])
+        return
+    resolved = resolve_fleet_machine(machine_id, None)
     if not resolved:
-        scope = _principal_tenant_scope(principal)
-        if scope and machine_id.strip().lower() in list_registered_fleet_machine_ids(scope):
-            assert_tenant_access(principal, scope)
-            return
         if principal.get("tenant_id") == "*":
             raise HTTPException(status_code=404, detail=f"No agent twin mapped for machine '{machine_id}'")
         raise HTTPException(
-            status_code=404,
-            detail=f"No agent twin mapped for machine '{machine_id}' (provide tenant_id if ambiguous)",
+            status_code=400,
+            detail="tenant_id is required for this machine (query, X-Tenant-Id, or JWT tenant claim)",
         )
     tenant_id, _asset_id, _twin, _tp = resolved
     assert_tenant_access(principal, tenant_id)

@@ -43,6 +43,33 @@ def test_post_reports_summary(monkeypatch):
     assert "graph" not in data
 
 
+def test_post_reports_summary_tenant_scoped_platform_machine_without_twin(monkeypatch):
+    """Platform machine ids come from the org asset register — no preload alias required."""
+    captured: dict = {}
+
+    def _fake(**kwargs):
+        captured.update(kwargs)
+        return {"summary": "Scoped machine summary.", "findings": ["ok"], "graph": {}}
+
+    monkeypatch.setattr(reports_route, "generate_report_summary", _fake)
+
+    payload = {
+        "companySlug": "greenbotz-platform-pvt-ltd",
+        "reportType": "MACHINE_CONDITION",
+        "title": "Machine condition",
+        "machineIds": ["gbz-01"],
+        "from": "2026-10-22T06:56:20.212Z",
+        "to": "2026-10-29T06:56:20.212Z",
+        "timezone": "Asia/Calcutta",
+        "kpis": [{"label": "Alerts", "value": "12"}],
+    }
+    resp = client.post("/api/v1/reports/summary", json=payload)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["summary"] == "Scoped machine summary."
+    assert captured["tenant_id"] == "greenbotz_platform"
+    assert captured["machine_ids"] == ["gbz-01"]
+
+
 def test_post_reports_summary_platform_webhook_without_tenant_id(monkeypatch):
     captured: dict = {}
 

@@ -90,6 +90,8 @@ class Settings(BaseSettings):
     AI_SERVICE_TIMEOUT_S: float = float(os.environ.get("AI_SERVICE_TIMEOUT_S", "5.0"))
     # JSON object: PDM companySlug -> APMS tenant_id (merged with built-in defaults in reports route)
     COMPANY_SLUG_TENANT_MAP: str = os.environ.get("COMPANY_SLUG_TENANT_MAP", "")
+    # JSON: {"tenant_id:platform_machine_id": "asset_id"} for ids not in twin metadata
+    FLEET_MACHINE_ALIAS_MAP: str = os.environ.get("FLEET_MACHINE_ALIAS_MAP", "")
     FLEET_MQTT_FROM_QUERY: bool = os.environ.get("FLEET_MQTT_FROM_QUERY", "false").lower() in (
         "1",
         "true",

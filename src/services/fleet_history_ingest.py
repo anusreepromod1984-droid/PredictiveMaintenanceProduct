@@ -8,8 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from src.agents.dynamic_orchestrator import global_orchestrator
 from src.core.buffer import platform_buffer
-from src.registry.asset_registry import asset_twin_registry
-from src.services.fleet_machine_resolver import resolve_fleet_machine
+from src.api.tenant_scope import resolve_scoped_machine
 from src.services.fleet_query_service import fleet_query_service
 from src.services.fleet_telemetry_adapter import build_ingest_packet, fleet_row_to_signals
 from src.utils.logger import get_logger
@@ -25,11 +24,10 @@ def ingest_history_rows(
     run_pipeline: bool = False,
     pipeline_every_n: int = 0,
 ) -> Dict[str, Any]:
-    resolved = resolve_fleet_machine(machine_id, tenant_hint)
-    if not resolved:
-        return {"ingested": 0, "pipelined": 0, "error": f"No twin mapped for fleet machine '{machine_id}'"}
+    if not tenant_hint or not str(tenant_hint).strip():
+        return {"ingested": 0, "pipelined": 0, "error": "tenant_id is required for fleet machine ingest"}
 
-    tenant_id, asset_id, twin, tenant_profile = resolved
+    tenant_id, asset_id, twin, tenant_profile = resolve_scoped_machine(machine_id, tenant_hint)
     ingested = 0
     pipelined = 0
 
