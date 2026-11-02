@@ -154,7 +154,19 @@ def build_service_effect(body: Dict[str, Any]) -> Dict[str, Any]:
         before, after = r.get("before"), r.get("after")
         pct = r.get("changePct")
         verdict = r.get("verdict")
-        bits = [f"{name} was {_fmt(before)} before and {_fmt(after)} after"]
+        has_before = before is not None and _fmt(before) != ""
+        has_after = after is not None and _fmt(after) != ""
+        if has_before and has_after:
+            bits = [f"{name} averaged {_fmt(before)} before service and {_fmt(after)} after"]
+        elif has_after:
+            bits = [
+                f"{name}: no pre-service average in the comparison window; "
+                f"post-service average {_fmt(after)}"
+            ]
+        elif has_before:
+            bits = [f"{name}: pre-service average {_fmt(before)}; no post-service average yet"]
+        else:
+            bits = [f"{name}: no before or after averages in the comparison payload"]
         if pct is not None:
             bits.append(f"changePct {_fmt(pct)}")
         if verdict:
