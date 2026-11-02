@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from src.middleware.auth import get_current_principal
 from src.services.service_report_analyze import analyze_service_report
+from src.services.service_report_comparison_enrich import enrich_comparison_from_upstream
 from src.services.service_report_effect import build_service_effect
 from src.utils.logger import get_logger
 
@@ -97,4 +98,5 @@ def effect(
         f"Service report effect record={body.serviceRecordId} company={body.companySlug} "
         f"caller={principal.get('sub')}"
     )
-    return build_service_effect(body.model_dump())
+    payload = enrich_comparison_from_upstream(body.model_dump())
+    return build_service_effect(payload)
