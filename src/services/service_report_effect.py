@@ -1,6 +1,12 @@
 """
 Explain a confirmed service using only numbers supplied in the comparison payload.
 Does not recompute change percentages or claim the service caused a change.
+
+The platform (reports + ai/query) should build comparison.window, for example:
+  - before: 7 days ending the day before serviceDate
+  - after: serviceDate through min(today, serviceDate + 90 days) for a post-service summary
+    (e.g. upload a report from 3 months ago → ~90 days of "after" averages in beforeAfter)
+APMS narrates those windows; it does not fetch telemetry.
 """
 
 from __future__ import annotations
@@ -34,14 +40,58 @@ def numbers_are_grounded(text: str, payload: Dict[str, Any]) -> bool:
     return True
 
 
-def _overall_effect(rows: List[Dict[str, Any]], readiness: Optional[str], window: Dict[str, Any]) -> str:
-    if readiness and str(readiness).upper() not in ("COMPLETE", ""):
-        if str(readiness).upper() != "COMPLETE":
-            return "TOO_EARLY"
+def _comparison_window_complete(readiness: Optional[str], window: Dict[str, Any]) -> bool:
+    if str(readiness or "").upper() == "COMPLETE":
+        return True
     collected = window.get("afterDaysCollected")
     required = window.get("afterDaysRequired")
-    if isinstance(collected, int) and isinstance(required, int) and collected < required:
-        return "TOO_EARLY"
+    if isinstance(collected, int) and isinstance(required, int) and required > 0:
+        return collected >= required
+    return False
+
+
+def _post_service_period_summary(window: Dict[str, Any], service: Dict[str, Any]) -> Optional[str]:
+    """
+    Human context for AI ANALYSIS: which dates the before/after averages cover.
+    All dates must already appear in the request JSON (number/date grounding).
+    """
+    before_w = window.get("before") if isinstance(window.get("before"), dict) else {}
+    after_w = window.get("after") if isinstance(window.get("after"), dict) else {}
+    bs, be = before_w.get("start"), before_w.get("end")
+    a_start, a_end = after_w.get("start"), after_w.get("end")
+    svc = service.get("serviceDate")
+
+    chunks: List[str] = []
+    if svc:
+        chunks.append(f"Service date {svc}.")
+    if bs and be:
+        chunks.append(f"Pre-service baseline window: {bs} through {be}.")
+    if a_start and a_end:
+        collected = window.get("afterDaysCollected")
+        if isinstance(collected, int) and collected > 7:
+            chunks.append(
+                f"Post-service performance summary: telemetry averages from {a_start} through {a_end} "
+                f"({collected} days after service)."
+            )
+        else:
+            chunks.append(f"Post-service telemetry averages: {a_start} through {a_end}.")
+    return " ".join(chunks) if chunks else None
+
+
+def _partial_window_note(window: Dict[str, Any]) -> Optional[str]:
+    collected = window.get("afterDaysCollected")
+    required = window.get("afterDaysRequired")
+    if not isinstance(collected, int) or not isinstance(required, int) or required <= 0:
+        return None
+    if collected >= required:
+        return None
+    return (
+        f"After-service window: {collected} of {required} days collected so far; "
+        f"averages may change as more telemetry arrives."
+    )
+
+
+def _overall_effect(rows: List[Dict[str, Any]]) -> str:
     improved = sum(1 for r in rows if r.get("verdict") == "IMPROVED")
     worse = sum(1 for r in rows if r.get("verdict") == "WORSE")
     if improved == 0 and worse == 0:
@@ -69,19 +119,18 @@ def build_service_effect(body: Dict[str, Any]) -> Dict[str, Any]:
     service = body.get("service") if isinstance(body.get("service"), dict) else {}
     window = comparison.get("window") if isinstance(comparison.get("window"), dict) else {}
     rows = [r for r in (comparison.get("beforeAfter") or []) if isinstance(r, dict)]
-    effect = _overall_effect(rows, comparison.get("readiness"), window)
+    window_complete = _comparison_window_complete(comparison.get("readiness"), window)
+    partial_note = _partial_window_note(window)
 
     points: List[str] = []
     concerns: List[str] = []
 
-    if effect == "TOO_EARLY":
+    if not rows:
         collected = window.get("afterDaysCollected")
         required = window.get("afterDaysRequired")
-        headline = "The after-service window is not complete yet, so no overall effect is stated."
+        headline = "No parameter comparison was supplied yet."
         if collected is not None and required is not None:
-            points.append(
-                f"After-window days collected {collected} of {required} required."
-            )
+            points.append(f"After-window days collected {collected} of {required} required.")
         return {
             "headline": headline[:300],
             "effect": "TOO_EARLY",
@@ -89,6 +138,13 @@ def build_service_effect(body: Dict[str, Any]) -> Dict[str, Any]:
             "concerns": [],
             "nextSteps": _clip([str(x) for x in (service.get("recommendations") or []) if x]),
         }
+
+    effect = _overall_effect(rows)
+    period_summary = _post_service_period_summary(window, service)
+    if period_summary:
+        points.append(period_summary)
+    if partial_note:
+        points.append(partial_note)
 
     improved = [r for r in rows if r.get("verdict") == "IMPROVED"]
     worse = [r for r in rows if r.get("verdict") == "WORSE"]
@@ -167,6 +223,9 @@ def build_service_effect(body: Dict[str, Any]) -> Dict[str, Any]:
         )
     else:
         headline = "No parameter moved outside the no-change band in the supplied comparison."
+
+    if partial_note and not window_complete:
+        headline = f"{partial_note} {headline}"[:300]
 
     next_steps = [str(x) for x in (service.get("recommendations") or []) if x]
     result = {
