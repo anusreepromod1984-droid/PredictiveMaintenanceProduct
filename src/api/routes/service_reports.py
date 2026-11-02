@@ -12,8 +12,7 @@ from pydantic import BaseModel, Field
 
 from src.middleware.auth import get_current_principal
 from src.services.service_report_analyze import analyze_service_report
-from src.services.service_report_comparison_enrich import enrich_comparison_from_upstream
-from src.services.service_report_effect import build_service_effect
+from src.services.service_report_effect import build_service_effect, enrich_comparison_from_upstream
 from src.utils.logger import get_logger
 
 logger = get_logger("API.ServiceReports")

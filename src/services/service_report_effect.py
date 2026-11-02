@@ -13,7 +13,16 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Optional
+from datetime import date, datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
+
+from src.services.fleet_query_service import fleet_query_service
+from src.services.fleet_telemetry_adapter import flatten_numeric_leaves
+from src.utils.logger import get_logger
+
+logger = get_logger("Services.ServiceReportEffect")
+
+_ENRICH_VERDICT_BAND_PCT = 5.0
 
 _NUM = re.compile(r"-?\d+(?:\.\d+)?")
 
@@ -256,3 +265,187 @@ def build_service_effect(body: Dict[str, Any]) -> Dict[str, Any]:
         if not numbers_are_grounded(result["headline"], body):
             result["headline"] = "Comparison figures are listed in the points below."
     return result
+
+
+def _enrich_parse_ymd(value: Any) -> Optional[date]:
+    if not value:
+        return None
+    try:
+        return datetime.strptime(str(value).strip()[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _enrich_row_date(row: Dict[str, Any]) -> Optional[date]:
+    ts = row.get("timestamp") or row.get("ts")
+    if isinstance(ts, (int, float)):
+        epoch = float(ts) / 1000.0 if ts > 1e12 else float(ts)
+        return datetime.fromtimestamp(epoch, tz=timezone.utc).date()
+    if isinstance(ts, str) and ts.strip():
+        try:
+            return datetime.fromisoformat(ts.replace("Z", "+00:00")).date()
+        except ValueError:
+            pass
+    return None
+
+
+def _enrich_value_for_key(row: Dict[str, Any], key: str) -> Optional[float]:
+    if not key:
+        return None
+    flat = flatten_numeric_leaves(row)
+    if key in flat:
+        return flat[key]
+    alt = key.replace(".", "_")
+    if alt in flat:
+        return flat[alt]
+    for k, v in flat.items():
+        if k.endswith(key.split(".")[-1]) or key.endswith(k.split(".")[-1]):
+            return v
+    return None
+
+
+def _enrich_mean(values: List[float]) -> Optional[float]:
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def _enrich_history_duration_days(before_start: date, after_end: date) -> str:
+    days = max(1, (after_end - before_start).days + 1)
+    return f"{min(days, 90)}d"
+
+
+def _enrich_recompute_verdict(
+    before: Optional[float],
+    after: Optional[float],
+    better_when: Optional[str],
+) -> Tuple[Optional[float], str]:
+    if before is None or after is None:
+        return None, "UNAVAILABLE"
+    if before == 0 and after == 0:
+        return 0.0, "NO_CHANGE"
+    if before == 0:
+        return None, "UNAVAILABLE"
+    pct = round((after - before) / abs(before) * 100.0, 1)
+    if abs(pct) <= _ENRICH_VERDICT_BAND_PCT:
+        return pct, "NO_CHANGE"
+    lower_better = str(better_when or "lower").lower() == "lower"
+    improved = (after < before) if lower_better else (after > before)
+    if improved:
+        return pct, "IMPROVED"
+    worse = (after > before) if lower_better else (after < before)
+    if worse:
+        return pct, "WORSE"
+    return pct, "CHANGED"
+
+
+def enrich_comparison_from_upstream(body: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Fill missing comparison.beforeAfter[].before from POST /api/ai/query history.
+    Reports should send complete averages; this backfill avoids all-UNAVAILABLE effect text.
+    """
+    comparison = body.get("comparison")
+    if not isinstance(comparison, dict):
+        return body
+    rows = comparison.get("beforeAfter")
+    if not isinstance(rows, list) or not rows:
+        return body
+    needs = any(
+        isinstance(r, dict)
+        and r.get("before") is None
+        and (r.get("after") is not None or r.get("key"))
+        for r in rows
+    )
+    if not needs or not fleet_query_service.is_configured():
+        return body
+
+    machine = body.get("machine") if isinstance(body.get("machine"), dict) else {}
+    machine_id = str(machine.get("id") or "").strip()
+    if not machine_id:
+        return body
+
+    window = comparison.get("window") if isinstance(comparison.get("window"), dict) else {}
+    before_w = window.get("before") if isinstance(window.get("before"), dict) else {}
+    after_w = window.get("after") if isinstance(window.get("after"), dict) else {}
+    b0 = _enrich_parse_ymd(before_w.get("start"))
+    b1 = _enrich_parse_ymd(before_w.get("end"))
+    a0 = _enrich_parse_ymd(after_w.get("start"))
+    a1 = _enrich_parse_ymd(after_w.get("end"))
+    if not all([b0, b1, a0, a1]):
+        logger.debug("Service effect enrich: comparison.window dates incomplete")
+        return body
+
+    duration = _enrich_history_duration_days(b0, a1)
+    keys = [str(r.get("key")) for r in rows if isinstance(r, dict) and r.get("key")]
+    try:
+        history_rows = fleet_query_service.fetch_history(
+            [machine_id],
+            source="db",
+            duration=duration,
+            max_points=2000,
+            fields=keys or None,
+        )
+    except Exception as e:
+        logger.warning(f"Service effect enrich: history fetch failed ({e})")
+        return body
+
+    if not history_rows:
+        logger.warning("Service effect enrich: no history rows from upstream")
+        return body
+
+    buckets: Dict[str, Dict[str, List[float]]] = {}
+    for row in history_rows:
+        if not isinstance(row, dict):
+            continue
+        d = _enrich_row_date(row)
+        if not d:
+            continue
+        bucket: Optional[str] = None
+        if b0 <= d <= b1:
+            bucket = "before"
+        elif a0 <= d <= a1:
+            bucket = "after"
+        if not bucket:
+            continue
+        for key in keys:
+            val = _enrich_value_for_key(row, key)
+            if val is None:
+                continue
+            buckets.setdefault(key, {"before": [], "after": []})[bucket].append(val)
+
+    updated: List[Dict[str, Any]] = []
+    filled = 0
+    for r in rows:
+        if not isinstance(r, dict):
+            updated.append(r)
+            continue
+        row = dict(r)
+        key = str(row.get("key") or "")
+        series = buckets.get(key) or {}
+        if row.get("before") is None and series.get("before"):
+            row["before"] = round(_enrich_mean(series["before"]), 4)
+            filled += 1
+        if row.get("after") is None and series.get("after"):
+            row["after"] = round(_enrich_mean(series["after"]), 4)
+            filled += 1
+        if row.get("before") is not None and row.get("after") is not None:
+            if row.get("verdict") in (None, "", "UNAVAILABLE"):
+                pct, verdict = _enrich_recompute_verdict(
+                    float(row["before"]),
+                    float(row["after"]),
+                    row.get("betterWhen"),
+                )
+                if pct is not None:
+                    row["changePct"] = pct
+                row["verdict"] = verdict
+        updated.append(row)
+
+    if filled:
+        logger.info(
+            f"Service effect enrich: filled {filled} missing before/after averages "
+            f"for machine={machine_id} from {len(history_rows)} history rows"
+        )
+        new_body = dict(body)
+        new_body["comparison"] = {**comparison, "beforeAfter": updated}
+        return new_body
+    return body
