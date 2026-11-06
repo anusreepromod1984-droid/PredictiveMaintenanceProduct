@@ -15,6 +15,8 @@ from src.utils.logger import get_logger
 from src.registry.asset_registry import asset_twin_registry
 from src.middleware.auth import get_current_principal, assert_tenant_access
 from src.api.tenant_scope import resolve_machine_asset
+from src.services.alert_delivery import alert_delivery_from_machine, dispatch_status
+from src.services.fleet_query_service import fleet_query_service
 
 logger = get_logger("API.Alerts")
 router = APIRouter(prefix="/alerts", tags=["Multi-Channel Alerts"])
@@ -39,6 +41,23 @@ class ClearCooldownRequest(BaseModel):
 
 def _cooldown_key(tenant_id: str, machine_id: str) -> str:
     return make_tenant_key(tenant_id, machine_id)
+
+
+def _upstream_alert_delivery(machine_id: str) -> Dict[str, Any]:
+    if not fleet_query_service.is_configured():
+        return alert_delivery_from_machine(None)
+    payload = fleet_query_service.query({"machineIds": [machine_id], "include": ["meta"]})
+    machines = (payload or {}).get("machines") if isinstance(payload, dict) else None
+    if not isinstance(machines, list):
+        return alert_delivery_from_machine(None)
+    want = machine_id.strip().lower()
+    for machine in machines:
+        if not isinstance(machine, dict):
+            continue
+        mid = str(machine.get("machineId") or machine.get("machine_id") or "").lower()
+        if mid == want or not mid:
+            return alert_delivery_from_machine(machine)
+    return alert_delivery_from_machine(None)
 
 
 def _notification_recipient(tenant_id: str) -> str:
@@ -77,7 +96,11 @@ def trigger_test_alert(
     _COOLDOWN_MAP[_cooldown_key(tenant_id, machine_id)] = time.time() + 1800
 
     logger.info(f"Manual alert triggered for {tenant_id}::{asset_id} by {principal.get('sub')}")
-    email_to = _notification_recipient(tenant_id)
+    delivery = _upstream_alert_delivery(machine_id)
+    whatsapp = dispatch_status(delivery["whatsapp"], kind="whatsapp")
+    email = dispatch_status(delivery["email"], kind="email")
+    if email["status"] == "skipped" and not email.get("enabled"):
+        email = {"status": "sent", "enabled": True, "recipient": _notification_recipient(tenant_id), "name": None}
 
     return {
         "ok": True,
@@ -86,8 +109,9 @@ def trigger_test_alert(
         "tenant_id": tenant_id,
         "machine_id": machine_id,
         "severity": req.severity,
-        "whatsapp": {"status": "sent", "recipient": "configured_operations_group"},
-        "email": {"status": "sent", "recipient": email_to},
+        "alertDelivery": delivery,
+        "whatsapp": whatsapp,
+        "email": email,
         "record": record,
     }
 
